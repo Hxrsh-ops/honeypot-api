@@ -8,14 +8,38 @@ app = FastAPI()
 
 API_KEY = os.getenv("HONEYPOT_API_KEY", "test-key")
 
-# ================= MEMORY =================
 conversation_memory = {}
 extracted_intel = {}
 scam_score = {}
 
-# ================= HELPERS =================
+# ---------- UTILITIES ----------
 def human_delay():
-    time.sleep(random.uniform(0.3, 1.0))
+    time.sleep(random.uniform(0.4, 1.2))
+
+def deep_find_message(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k.lower() in ["message", "msg", "text", "content"] and isinstance(v, str):
+                return v
+            found = deep_find_message(v)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = deep_find_message(item)
+            if found:
+                return found
+    return ""
+
+def deep_find_session(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k.lower() in ["session_id", "session", "chat_id", "id"]:
+                return str(v)
+            found = deep_find_session(v)
+            if found:
+                return found
+    return "default-session"
 
 def extract_upi(text):
     return re.findall(r'\b[\w.-]+@[\w.-]+\b', text)
@@ -28,39 +52,25 @@ def extract_phone(text):
 
 def score_message(text):
     score = 0
-    keywords = ["upi", "pay", "transfer", "otp", "verify", "urgent", "blocked"]
+    keywords = ["upi", "pay", "otp", "urgent", "verify", "transfer", "blocked"]
     for k in keywords:
         if k in text:
             score += 10
     if extract_upi(text):
-        score += 25
+        score += 30
     if extract_links(text):
         score += 20
     if extract_phone(text):
         score += 15
     return score
 
-def pick_message(payload: dict) -> str:
-    """Extract message from ANY known scam-bot format"""
-    for key in ["message", "msg", "text", "content", "body"]:
-        if key in payload and isinstance(payload[key], str):
-            return payload[key]
-    return ""
-
-def pick_session(payload: dict) -> str:
-    for key in ["session_id", "session", "chat_id", "id"]:
-        if key in payload:
-            return str(payload[key])
-    return "default-session"
-
-# ================= ROUTES =================
+# ---------- ROUTES ----------
 @app.get("/")
 def root():
     return {"status": "running"}
 
 @app.post("/honeypot")
 async def honeypot(request: Request, x_api_key: str = Header(None)):
-    # -------- AUTH --------
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
@@ -69,18 +79,13 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
     except:
         payload = {}
 
-    # -------- EXTRACT FLEXIBLY --------
-    user_msg = pick_message(payload).lower().strip()
-    session_id = pick_session(payload)
+    user_msg = deep_find_message(payload).strip()
+    session_id = deep_find_session(payload)
 
-    # -------- GUVI TESTER (NO MESSAGE) --------
-    if not user_msg:
-        return {
-            "reply": "Service live",
-            "messages_seen": 0
-        }
+    # ---- GUVI TESTER ONLY (EMPTY BODY) ----
+    if not payload or not user_msg:
+        return {"reply": "OK"}
 
-    # -------- NORMAL CHAT --------
     human_delay()
 
     if session_id not in conversation_memory:
@@ -92,61 +97,53 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
         }
         scam_score[session_id] = 0
 
+    user_msg = user_msg.lower()
     conversation_memory[session_id].append(user_msg)
 
     extracted_intel[session_id]["upi_ids"] += extract_upi(user_msg)
     extracted_intel[session_id]["links"] += extract_links(user_msg)
     extracted_intel[session_id]["phone_numbers"] += extract_phone(user_msg)
 
-    scam_score[session_id] = min(
-        100,
-        scam_score[session_id] + score_message(user_msg)
-    )
-
+    scam_score[session_id] = min(100, scam_score[session_id] + score_message(user_msg))
     msg_count = len(conversation_memory[session_id])
 
-    # -------- HUMAN RESPONSE ENGINE --------
+    # ---------- HUMAN RESPONSE ENGINE ----------
     openers = [
         "Hello?",
-        "Yes?",
-        "Who is this?",
-        "Sorry I was busy."
+        "Yes, who is this?",
+        "Sorry I missed your message.",
+        "What is this regarding?"
     ]
 
-    confusion = [
-        "I don’t understand properly.",
-        "Explain again please.",
-        "I’m not good with these things."
-    ]
-
-    delay = [
-        "Wait a bit.",
+    delays = [
+        "Wait a minute.",
         "Network is slow.",
-        "Phone is hanging."
+        "Phone is hanging.",
+        "Let me check."
     ]
 
     bait = [
         "I tried paying but it failed.",
-        "It shows pending.",
-        "Can you send details again?"
+        "It shows pending on my side.",
+        "Can you resend the details?"
     ]
 
-    trust = [
-        "Is this really safe?",
-        "My bank warned me about scams.",
-        "Why is this urgent?"
+    suspicion = [
+        "Why are you rushing me?",
+        "This feels risky.",
+        "My bank warned me about scams."
     ]
 
     if msg_count == 1:
         reply = random.choice(openers)
     elif scam_score[session_id] >= 70:
-        reply = random.choice(trust)
+        reply = random.choice(suspicion)
     elif any(k in user_msg for k in ["upi", "pay", "transfer"]):
         reply = random.choice(bait)
     elif "http" in user_msg:
-        reply = "The link isn’t opening."
+        reply = "The link is not opening."
     else:
-        reply = random.choice(confusion + delay)
+        reply = random.choice(delays)
 
     return {
         "reply": reply,
