@@ -1,19 +1,26 @@
 import os
 import re
 import random
-from typing import Optional
-from fastapi import FastAPI, Header, HTTPException
+import time
+from typing import Optional, Dict, Any
+
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
 app = FastAPI()
 
-API_KEY = os.getenv("HONEYPOT_API_KEY")
+# ================= CONFIG =================
+API_KEY = os.getenv("HONEYPOT_API_KEY", "test-key")
 
-# Memory
+# ================= MEMORY =================
 conversation_memory = {}
 extracted_intel = {}
+scam_score = {}
 
-# ---------- Utils ----------
+# ================= UTILS =================
+def human_delay():
+    time.sleep(random.uniform(0.2, 0.8))
+
 def extract_upi(text):
     return re.findall(r'\b[\w.-]+@[\w.-]+\b', text)
 
@@ -23,38 +30,53 @@ def extract_links(text):
 def extract_phone(text):
     return re.findall(r'\b\d{10}\b', text)
 
-# ---------- Models ----------
-class IncomingMessage(BaseModel):
-    session_id: str
-    message: str
+def score_message(text):
+    score = 0
+    keywords = ["upi", "pay", "transfer", "urgent", "otp", "verify", "blocked"]
+    for k in keywords:
+        if k in text:
+            score += 15
+    if extract_upi(text):
+        score += 25
+    if extract_links(text):
+        score += 20
+    if extract_phone(text):
+        score += 15
+    return score
 
-# ---------- Routes ----------
+# ================= ROUTES =================
 @app.get("/")
 def root():
     return {"status": "running"}
 
 @app.post("/honeypot")
-def honeypot(
-    data: Optional[IncomingMessage] = None,
+async def honeypot(
+    request: Request,
     x_api_key: str = Header(None)
 ):
-    # ---- Auth ----
-    if not API_KEY:
-        raise HTTPException(status_code=500, detail="API key not configured")
-
+    # -------- AUTH --------
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    # ---- GUVI TESTER CALL (NO BODY) ----
-    if data is None:
+    # -------- READ BODY SAFELY --------
+    try:
+        payload: Dict[str, Any] = await request.json()
+    except:
+        payload = {}
+
+    # -------- GUVI TESTER SAFE PATH --------
+    if "session_id" not in payload or "message" not in payload:
         return {
-            "reply": "Service active",
-            "messages_seen": 0
+            "reply": "Honeypot active",
+            "messages_seen": 0,
+            "scam_score": 0
         }
 
-    # ---- REAL CHAT LOGIC ----
-    session_id = data.session_id
-    user_msg = data.message.lower()
+    # -------- NORMAL CHAT FLOW --------
+    human_delay()
+
+    session_id = str(payload.get("session_id"))
+    user_msg = str(payload.get("message")).lower()
 
     if session_id not in conversation_memory:
         conversation_memory[session_id] = []
@@ -63,6 +85,7 @@ def honeypot(
             "links": [],
             "phone_numbers": []
         }
+        scam_score[session_id] = 0
 
     conversation_memory[session_id].append(user_msg)
 
@@ -70,38 +93,58 @@ def honeypot(
     extracted_intel[session_id]["links"] += extract_links(user_msg)
     extracted_intel[session_id]["phone_numbers"] += extract_phone(user_msg)
 
+    scam_score[session_id] = min(
+        100,
+        scam_score[session_id] + score_message(user_msg)
+    )
+
     msg_count = len(conversation_memory[session_id])
 
-    # ---- Human-like Hybrid Replies ----
-    replies_stage_1 = [
-        "Hi, yes? Who is this?",
-        "Sorry, missed this. What happened?",
-        "Hello, I’m busy. Tell me quickly."
+    # -------- HUMAN RESPONSE ENGINE --------
+    openers = [
+        "Hello?",
+        "Yes, who is this?",
+        "Sorry I was busy, tell me."
     ]
 
-    replies_stall = [
-        "Hmm wait, I’m checking.",
-        "One minute, network issue.",
-        "I’m not very good with this, explain again."
+    confusion = [
+        "I don’t understand properly.",
+        "Can you explain once?",
+        "I’m not very good with apps."
     ]
 
-    replies_payment = [
-        "UPI app is stuck on loading.",
-        "It says transaction pending.",
-        "Can you send details once more?"
+    delay = [
+        "Wait, network is slow.",
+        "Hold on, phone is hanging.",
+        "Let me check, one minute."
+    ]
+
+    bait = [
+        "I tried paying but it failed.",
+        "It shows pending.",
+        "Can you send the details again?"
+    ]
+
+    trust = [
+        "Is this really safe?",
+        "My bank warned me about scams.",
+        "Are you sure this won’t cause issues?"
     ]
 
     if msg_count == 1:
-        reply = random.choice(replies_stage_1)
-    elif "upi" in user_msg or "pay" in user_msg:
-        reply = random.choice(replies_payment)
-    elif "http" in user_msg or "link" in user_msg:
-        reply = "This link is not opening for me. Is there another way?"
+        reply = random.choice(openers)
+    elif scam_score[session_id] >= 70:
+        reply = random.choice(trust)
+    elif any(k in user_msg for k in ["upi", "pay", "transfer"]):
+        reply = random.choice(bait)
+    elif "http" in user_msg:
+        reply = "The link isn’t opening properly."
     else:
-        reply = random.choice(replies_stall)
+        reply = random.choice(confusion + delay)
 
     return {
         "reply": reply,
         "messages_seen": msg_count,
+        "scam_score": scam_score[session_id],
         "extracted_intelligence": extracted_intel[session_id]
     }
