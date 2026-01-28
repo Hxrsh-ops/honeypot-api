@@ -2,14 +2,10 @@ import os
 import re
 import random
 import time
-from typing import Optional, Dict, Any
-
 from fastapi import FastAPI, Header, HTTPException, Request
-from pydantic import BaseModel
 
 app = FastAPI()
 
-# ================= CONFIG =================
 API_KEY = os.getenv("HONEYPOT_API_KEY", "test-key")
 
 # ================= MEMORY =================
@@ -17,9 +13,9 @@ conversation_memory = {}
 extracted_intel = {}
 scam_score = {}
 
-# ================= UTILS =================
+# ================= HELPERS =================
 def human_delay():
-    time.sleep(random.uniform(0.2, 0.8))
+    time.sleep(random.uniform(0.3, 1.0))
 
 def extract_upi(text):
     return re.findall(r'\b[\w.-]+@[\w.-]+\b', text)
@@ -32,10 +28,10 @@ def extract_phone(text):
 
 def score_message(text):
     score = 0
-    keywords = ["upi", "pay", "transfer", "urgent", "otp", "verify", "blocked"]
+    keywords = ["upi", "pay", "transfer", "otp", "verify", "urgent", "blocked"]
     for k in keywords:
         if k in text:
-            score += 15
+            score += 10
     if extract_upi(text):
         score += 25
     if extract_links(text):
@@ -44,39 +40,48 @@ def score_message(text):
         score += 15
     return score
 
+def pick_message(payload: dict) -> str:
+    """Extract message from ANY known scam-bot format"""
+    for key in ["message", "msg", "text", "content", "body"]:
+        if key in payload and isinstance(payload[key], str):
+            return payload[key]
+    return ""
+
+def pick_session(payload: dict) -> str:
+    for key in ["session_id", "session", "chat_id", "id"]:
+        if key in payload:
+            return str(payload[key])
+    return "default-session"
+
 # ================= ROUTES =================
 @app.get("/")
 def root():
     return {"status": "running"}
 
 @app.post("/honeypot")
-async def honeypot(
-    request: Request,
-    x_api_key: str = Header(None)
-):
+async def honeypot(request: Request, x_api_key: str = Header(None)):
     # -------- AUTH --------
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    # -------- READ BODY SAFELY --------
     try:
-        payload: Dict[str, Any] = await request.json()
+        payload = await request.json()
     except:
         payload = {}
 
-    # -------- GUVI TESTER SAFE PATH --------
-    if "session_id" not in payload or "message" not in payload:
+    # -------- EXTRACT FLEXIBLY --------
+    user_msg = pick_message(payload).lower().strip()
+    session_id = pick_session(payload)
+
+    # -------- GUVI TESTER (NO MESSAGE) --------
+    if not user_msg:
         return {
-            "reply": "Honeypot active",
-            "messages_seen": 0,
-            "scam_score": 0
+            "reply": "Service live",
+            "messages_seen": 0
         }
 
-    # -------- NORMAL CHAT FLOW --------
+    # -------- NORMAL CHAT --------
     human_delay()
-
-    session_id = str(payload.get("session_id"))
-    user_msg = str(payload.get("message")).lower()
 
     if session_id not in conversation_memory:
         conversation_memory[session_id] = []
@@ -103,32 +108,33 @@ async def honeypot(
     # -------- HUMAN RESPONSE ENGINE --------
     openers = [
         "Hello?",
-        "Yes, who is this?",
-        "Sorry I was busy, tell me."
+        "Yes?",
+        "Who is this?",
+        "Sorry I was busy."
     ]
 
     confusion = [
         "I don’t understand properly.",
-        "Can you explain once?",
-        "I’m not very good with apps."
+        "Explain again please.",
+        "I’m not good with these things."
     ]
 
     delay = [
-        "Wait, network is slow.",
-        "Hold on, phone is hanging.",
-        "Let me check, one minute."
+        "Wait a bit.",
+        "Network is slow.",
+        "Phone is hanging."
     ]
 
     bait = [
         "I tried paying but it failed.",
         "It shows pending.",
-        "Can you send the details again?"
+        "Can you send details again?"
     ]
 
     trust = [
         "Is this really safe?",
         "My bank warned me about scams.",
-        "Are you sure this won’t cause issues?"
+        "Why is this urgent?"
     ]
 
     if msg_count == 1:
@@ -138,7 +144,7 @@ async def honeypot(
     elif any(k in user_msg for k in ["upi", "pay", "transfer"]):
         reply = random.choice(bait)
     elif "http" in user_msg:
-        reply = "The link isn’t opening properly."
+        reply = "The link isn’t opening."
     else:
         reply = random.choice(confusion + delay)
 
