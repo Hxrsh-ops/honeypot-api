@@ -1,97 +1,253 @@
 import os
-import re
 import random
 import time
 from fastapi import FastAPI, Header, HTTPException, Request
 
-# ================= LLM =================
-LLM_ENABLED = bool(os.getenv("OPENAI_API_KEY"))
-if LLM_ENABLED:
-    try:
-        from openai import OpenAI
-        llm = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    except:
-        llm = None
-        LLM_ENABLED = False
-else:
-    llm = None
-
-# ================= APP =================
+# ================== APP ==================
 app = FastAPI()
 API_KEY = os.getenv("HONEYPOT_API_KEY", "test-key")
 
-# ================= MEMORY =================
-memory = {}
-beliefs = {}
-intel = {}
-topics_asked = {}
-last_intent = {}
+# ================== MASSIVE HUMAN DATA BANK ==================
 
-# ================= HELPERS =================
-def delay():
-    time.sleep(random.uniform(0.4, 1.2))
+CONFUSED = [
+    "wait, what is this about?",
+    "which account are you talking about?",
+    "i don’t remember doing anything wrong",
+    "i’m not sure i understand this message",
+    "why am i getting this now?",
+    "what problem are you referring to?",
+    "i just woke up, explain slowly",
+    "sorry, i’m a bit lost here",
+    "this is the first time i’m hearing this",
+    "can you explain in simple words?",
+    "i don’t usually get messages like this",
+    "what exactly happened?",
+    "is this savings or salary account?",
+    "i didn’t receive any alert before",
+    "what suspicious activity?",
+    "i haven’t checked my account today",
+    "nothing like this showed in my app",
+    "i didn’t get any sms",
+    "why is this sudden?",
+    "i’m not able to follow this",
+    "can you repeat that?",
+    "i’m not good with banking terms",
+    "this sounds very sudden",
+    "what do you mean compromised?",
+    "i’m genuinely confused now",
+    "are you sure this is my account?",
+    "i haven’t shared anything",
+    "what exactly do you need from me?",
+    "i’ve never faced this before",
+    "why wasn’t i informed earlier?",
+    "this doesn’t ring a bell",
+    "i don’t remember any issue",
+    "i checked balance yesterday",
+    "everything looked normal",
+    "this is confusing me more"
+]
 
-def extract(pattern, text):
-    return re.findall(pattern, text)
+VERIFY = [
+    "why are you messaging instead of calling?",
+    "my bank usually calls me",
+    "which branch is this related to?",
+    "can you tell me the branch name?",
+    "who exactly is handling this?",
+    "what department are you from?",
+    "why didn’t i get an email first?",
+    "is there a reference number?",
+    "how can i verify this independently?",
+    "which city office is this?",
+    "why does this not show in my bank app?",
+    "can you tell me the last transaction?",
+    "what is your official designation?",
+    "why are you using this number?",
+    "what’s the registered email for this?",
+    "why am i not seeing this in net banking?",
+    "do you have a complaint id?",
+    "who raised this alert?",
+    "what is the escalation process?",
+    "which team detected this?",
+    "what is your employee id?",
+    "why was i not notified earlier?",
+    "is this automated or manual?",
+    "why does your number look personal?",
+    "can i cross-check with my branch?",
+    "why isn’t this from sbi domain?",
+    "which division is this?",
+    "can i verify by calling customer care?",
+    "why does this feel rushed?",
+    "how did you detect this activity?",
+    "what triggered this alert?",
+    "why didn’t i get ivr call?",
+    "what’s the standard protocol?"
+]
 
-def extract_all(text):
-    return {
-        "upi": extract(r'\b[\w.-]+@[\w.-]+\b', text),
-        "links": extract(r'https?://\S+', text),
-        "phones": extract(r'\b\d{10}\b', text),
-        "ifsc": extract(r'\b[A-Z]{4}0[A-Z0-9]{6}\b', text),
-        "email": extract(r'[\w\.-]+@[\w\.-]+\.\w+', text)
-    }
+STALL = [
+    "i’m outside right now",
+    "i’m driving, can’t check",
+    "phone battery is low",
+    "network is very bad",
+    "i need to reach home first",
+    "i don’t have documents with me",
+    "can i get back to you later?",
+    "i’m in a meeting",
+    "i’ll check once i reach office",
+    "i don’t have my passbook",
+    "i need to find my papers",
+    "i’m traveling right now",
+    "i’ll call you later",
+    "give me some time please",
+    "i can’t check now",
+    "my phone is hanging",
+    "i need to charge my phone",
+    "i’m on the road",
+    "i’m with someone",
+    "i’ll message once free",
+    "let me sit and check",
+    "i don’t want to rush this",
+    "i need a quiet place",
+    "i’m at work",
+    "i’ll look into it shortly",
+    "i need to calm down",
+    "this is too sudden",
+    "i can’t think clearly",
+    "give me a few minutes",
+    "i need to check with family",
+    "i’m busy right now",
+    "i’ll get back to you"
+]
 
-def deep_find(obj, keys):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k.lower() in keys and isinstance(v, str):
-                return v
-            found = deep_find(v, keys)
-            if found: return found
-    elif isinstance(obj, list):
-        for i in obj:
-            found = deep_find(i, keys)
-            if found: return found
-    return ""
+ANNOYED = [
+    "why are you rushing me so much?",
+    "i already told you i need time",
+    "stop repeating the same thing",
+    "you’re not answering my question",
+    "this is getting irritating",
+    "i’m trying to cooperate",
+    "why are you not listening?",
+    "you’re pressuring me",
+    "you said something else earlier",
+    "this doesn’t make sense",
+    "why is everything urgent?",
+    "i’m not comfortable with this",
+    "you’re confusing me",
+    "your answers are unclear",
+    "details keep changing",
+    "this feels very off",
+    "this is frustrating",
+    "i’m losing patience",
+    "you’re dodging questions",
+    "this is not convincing",
+    "stop pushing me",
+    "this is weird now",
+    "why can’t you answer properly",
+    "i don’t trust this",
+    "this is annoying",
+    "you’re making it worse",
+    "this is suspicious",
+    "i don’t like this tone",
+    "this is unnecessary pressure"
+]
 
-def ai_say(intent, context):
-    if not LLM_ENABLED or not llm:
-        return intent
-    prompt = f"""
-You are a real human chatting on WhatsApp.
-Context: {context}
+GENZ = [
+    "wait what??",
+    "bro what is this",
+    "nah this feels sus",
+    "this ain’t normal",
+    "hold on lemme check",
+    "bruh",
+    "why so urgent tho",
+    "ngl this feels fake",
+    "stop spamming pls",
+    "idk man",
+    "this doesn’t add up",
+    "this is sketchy",
+    "lowkey looks fake",
+    "nah i’m good",
+    "why you rushing me",
+    "this is weird af",
+    "why you texting like this",
+    "my bank never texts like this",
+    "send proper details first",
+    "how do i verify this",
+    "this looks fake tbh",
+    "i’m not sharing anything",
+    "lemme think",
+    "idk about this",
+    "something’s off",
+    "can you chill for a sec",
+    "this stressing me out",
+    "nah bro",
+    "this ain’t convincing",
+    "stop repeating",
+    "this is sus ngl",
+    "i’ll check later",
+    "not doing this rn",
+    "sounds like a scam",
+    "yeah no"
+]
 
-Rules:
-- sound human
-- short
-- imperfect
-- no AI tone
-- no emojis
+FILLERS = [
+    "uhh", "umm", "hmm", "uh", "huh",
+    "hmm wait", "uh idk", "umm okay",
+    "hmm not sure", "bruh wait", "lol wait",
+    "uhh hold on", "umm give me a sec",
+    "hmm pause", "uhh sorry", "hmm okay",
+    "uh wait a min", "hmm idk man"
+]
 
-Say this naturally:
-"{intent}"
-"""
-    try:
-        r = llm.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.8,
-            max_tokens=60
-        )
-        return r.choices[0].message.content.strip()
-    except:
-        return intent
+DATASETS = {
+    "confused": CONFUSED,
+    "verify": VERIFY,
+    "stall": STALL,
+    "annoyed": ANNOYED,
+    "genz": GENZ
+}
 
-# ================= ROUTES =================
+# ================== SESSION STATE ==================
+sessions = {}
+
+def human_delay():
+    time.sleep(random.uniform(0.4, 1.1))
+
+def rotate_mood(turn):
+    if turn < 2:
+        return "confused"
+    elif turn < 4:
+        return "verify"
+    elif turn < 6:
+        return "stall"
+    elif turn < 8:
+        return "annoyed"
+    else:
+        return random.choice(list(DATASETS.keys()))
+
+def choose_reply(session_id):
+    mood = sessions[session_id]["mood"]
+    used = sessions[session_id]["used"]
+    pool = DATASETS[mood]
+
+    options = [r for r in pool if r not in used]
+    if not options:
+        used.clear()
+        options = pool
+
+    reply = random.choice(options)
+    used.add(reply)
+
+    if random.random() < 0.3:
+        reply = f"{random.choice(FILLERS)}… {reply}"
+
+    return reply
+
+# ================== ROUTES ==================
 @app.get("/")
 def root():
     return {"status": "running"}
 
 @app.post("/honeypot")
 async def honeypot(req: Request, x_api_key: str = Header(None)):
-
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
@@ -100,95 +256,28 @@ async def honeypot(req: Request, x_api_key: str = Header(None)):
     except:
         payload = {}
 
-    msg = deep_find(payload, ["message","msg","text","content"]).strip()
-    sid = deep_find(payload, ["session_id","session","chat_id","id"]) or "default"
+    message = payload.get("message", "")
+    session_id = payload.get("session_id", "default")
 
-    # Tester ping
-    if not payload or not msg:
-        return {"reply": "OK"}
+    if not payload or not message:
+        return {"reply": "OK", "messages_seen": 0}
 
-    delay()
-    msg = msg.lower()
+    human_delay()
 
-    # INIT
-    if sid not in memory:
-        memory[sid] = []
-        beliefs[sid] = {
-            "city": None,
-            "ifsc": None,
-            "email": None,
-            "claimed_role": None,
-            "urgency": 0
+    if session_id not in sessions:
+        sessions[session_id] = {
+            "turns": 0,
+            "used": set(),
+            "mood": "confused"
         }
-        intel[sid] = {"upi":[], "links":[], "phones":[]}
-        topics_asked[sid] = set()
-        last_intent[sid] = ""
 
-    memory[sid].append(msg)
+    sessions[session_id]["turns"] += 1
+    turn = sessions[session_id]["turns"]
+    sessions[session_id]["mood"] = rotate_mood(turn)
 
-    # ========== UPDATE BELIEFS ==========
-    found = extract_all(msg)
-    if found["ifsc"]: beliefs[sid]["ifsc"] = found["ifsc"][0]
-    if found["email"]: beliefs[sid]["email"] = found["email"][0]
-    if "mumbai" in msg: beliefs[sid]["city"] = "mumbai"
-    if "head office" in msg: beliefs[sid]["claimed_role"] = "central"
-    if "urgent" in msg or "immediately" in msg: beliefs[sid]["urgency"] += 1
-
-    intel[sid]["upi"] += found["upi"]
-    intel[sid]["links"] += found["links"]
-    intel[sid]["phones"] += found["phones"]
-
-    # ========== GOAL SELECTION ==========
-    goal = None
-
-    # 1. Contradiction
-    if beliefs[sid]["claimed_role"] == "central" and intel[sid]["phones"]:
-        goal = "challenge authority inconsistency"
-
-    # 2. Repetition fatigue
-    elif last_intent[sid] and last_intent[sid] in msg:
-        goal = "call out repetition"
-
-    # 3. Topic exhaustion
-    elif "ifsc" in topics_asked[sid] and beliefs[sid]["ifsc"]:
-        goal = "pivot verification"
-
-    # 4. High urgency → pressure reversal
-    elif beliefs[sid]["urgency"] >= 2:
-        goal = "reverse pressure"
-
-    # 5. Default extraction
-    else:
-        goal = "extract more info"
-
-    # ========== INTENT GENERATION ==========
-    if goal == "challenge authority inconsistency":
-        intent = "If this is handled centrally, why are you sharing a personal number?"
-
-    elif goal == "call out repetition":
-        intent = "You already told me that. Why are you repeating instead of answering?"
-
-    elif goal == "pivot verification":
-        intent = "Instead of repeating IFSC, tell me the registered branch landline."
-
-    elif goal == "reverse pressure":
-        intent = "You keep saying urgent. Why wasn’t I notified earlier through my bank app?"
-
-    else:  # extract
-        options = [
-            "Who is the branch manager handling this?",
-            "Which department is sending this message?",
-            "What’s the official SBI email for this case?"
-        ]
-        intent = random.choice(options)
-
-    last_intent[sid] = intent
-    topics_asked[sid].add(intent.split()[0])
-
-    reply = ai_say(intent, beliefs[sid])
+    reply = choose_reply(session_id)
 
     return {
         "reply": reply,
-        "beliefs": beliefs[sid],
-        "extracted_intelligence": intel[sid]
+        "messages_seen": turn
     }
