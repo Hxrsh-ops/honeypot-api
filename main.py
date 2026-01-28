@@ -4,7 +4,7 @@ import random
 import time
 from fastapi import FastAPI, Header, HTTPException, Request
 
-# ================= LLM SETUP =================
+# ================= LLM =================
 LLM_ENABLED = bool(os.getenv("OPENAI_API_KEY"))
 if LLM_ENABLED:
     try:
@@ -21,21 +21,27 @@ app = FastAPI()
 API_KEY = os.getenv("HONEYPOT_API_KEY", "test-key")
 
 # ================= MEMORY =================
-conversation = {}
+memory = {}
+beliefs = {}
 intel = {}
-score = {}
-phase = {}
-emotion = {}
-repeat_counter = {}
-last_reply_time = {}
+topics_asked = {}
+last_intent = {}
 
 # ================= HELPERS =================
-def human_delay():
-    time.sleep(random.uniform(0.5, 1.4))
+def delay():
+    time.sleep(random.uniform(0.4, 1.2))
 
-def extract_upi(t): return re.findall(r'\b[\w.-]+@[\w.-]+\b', t)
-def extract_links(t): return re.findall(r'https?://\S+', t)
-def extract_phone(t): return re.findall(r'\b\d{10}\b', t)
+def extract(pattern, text):
+    return re.findall(pattern, text)
+
+def extract_all(text):
+    return {
+        "upi": extract(r'\b[\w.-]+@[\w.-]+\b', text),
+        "links": extract(r'https?://\S+', text),
+        "phones": extract(r'\b\d{10}\b', text),
+        "ifsc": extract(r'\b[A-Z]{4}0[A-Z0-9]{6}\b', text),
+        "email": extract(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+    }
 
 def deep_find(obj, keys):
     if isinstance(obj, dict):
@@ -50,47 +56,31 @@ def deep_find(obj, keys):
             if found: return found
     return ""
 
-def calc_score(t):
-    s = 0
-    for k in ["upi","pay","otp","urgent","verify","blocked","account","security","freeze"]:
-        if k in t: s += 10
-    if extract_upi(t): s += 25
-    if extract_links(t): s += 20
-    if extract_phone(t): s += 15
-    return s
-
-def ai_humanize(intent, emo, ph, annoyed=False):
+def ai_say(intent, context):
     if not LLM_ENABLED or not llm:
         return intent
-
-    tone = "annoyed and impatient" if annoyed else emo
-
     prompt = f"""
 You are a real human chatting on WhatsApp.
-
-Emotion: {tone}
-Phase: {ph}
+Context: {context}
 
 Rules:
-- sound human, imperfect
-- short (1–2 lines)
+- sound human
+- short
+- imperfect
 - no AI tone
-- no explanations
 - no emojis
 
-Rewrite naturally:
+Say this naturally:
 "{intent}"
 """
-
     try:
         r = llm.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role":"user","content":prompt}],
-            temperature=0.75,
+            temperature=0.8,
             max_tokens=60
         )
-        out = r.choices[0].message.content.strip()
-        return out if len(out) < 200 else intent
+        return r.choices[0].message.content.strip()
     except:
         return intent
 
@@ -117,98 +107,88 @@ async def honeypot(req: Request, x_api_key: str = Header(None)):
     if not payload or not msg:
         return {"reply": "OK"}
 
-    human_delay()
+    delay()
     msg = msg.lower()
 
     # INIT
-    if sid not in conversation:
-        conversation[sid] = []
-        intel[sid] = {"upi":[], "links":[], "phone":[]}
-        score[sid] = 0
-        phase[sid] = "confusion"
-        emotion[sid] = "neutral"
-        repeat_counter[sid] = 0
-        last_reply_time[sid] = time.time()
-
-    # Repeat detection
-    if conversation[sid] and msg == conversation[sid][-1]:
-        repeat_counter[sid] += 1
-    else:
-        repeat_counter[sid] = 0
-
-    conversation[sid].append(msg)
-
-    # Intel
-    intel[sid]["upi"] += extract_upi(msg)
-    intel[sid]["links"] += extract_links(msg)
-    intel[sid]["phone"] += extract_phone(msg)
-    score[sid] = min(100, score[sid] + calc_score(msg))
-
-    # Phase transitions
-    if score[sid] > 30 and phase[sid] == "confusion":
-        phase[sid] = "verify"; emotion[sid] = "uneasy"
-    if score[sid] > 55 and phase[sid] == "verify":
-        phase[sid] = "delay"; emotion[sid] = "worried"
-    if score[sid] > 75 and phase[sid] == "delay":
-        phase[sid] = "pressure_reverse"; emotion[sid] = "suspicious"
-    if score[sid] > 90:
-        phase[sid] = "extract"; emotion[sid] = "annoyed"
-
-    # Time-based impatience
-    annoyed = False
-    if time.time() - last_reply_time[sid] < 3:
-        annoyed = True
-
-    last_reply_time[sid] = time.time()
-
-    # Memory callback
-    if repeat_counter[sid] >= 2:
-        intent = "You already said the same thing. Why are you repeating this?"
-        reply = ai_humanize(intent, emotion[sid], phase[sid], annoyed=True)
-        return {
-            "reply": reply,
-            "phase": phase[sid],
-            "emotion": emotion[sid],
-            "scam_score": score[sid],
-            "extracted_intelligence": intel[sid]
+    if sid not in memory:
+        memory[sid] = []
+        beliefs[sid] = {
+            "city": None,
+            "ifsc": None,
+            "email": None,
+            "claimed_role": None,
+            "urgency": 0
         }
+        intel[sid] = {"upi":[], "links":[], "phones":[]}
+        topics_asked[sid] = set()
+        last_intent[sid] = ""
 
-    # Intent engine
-    intents = {
-        "confusion": [
-            "Which account are you talking about?",
-            "I don’t understand what this is.",
-            "Can you explain clearly?"
-        ],
-        "verify": [
-            "Why are you messaging instead of calling from registered number?",
-            "Tell me the branch name linked to this account.",
-            "What city branch is this?"
-        ],
-        "delay": [
-            "I’m outside, need time.",
-            "My documents are at home.",
-            "I’ll check once I reach."
-        ],
-        "pressure_reverse": [
-            "Earlier you said 2 hours, now it’s immediate?",
-            "Why can’t I just visit the bank?",
-            "This is sounding strange."
-        ],
-        "extract": [
-            "Before sharing anything, tell me IFSC and branch.",
-            "What’s the official SBI email for this?",
-            "Which branch manager is handling this?"
+    memory[sid].append(msg)
+
+    # ========== UPDATE BELIEFS ==========
+    found = extract_all(msg)
+    if found["ifsc"]: beliefs[sid]["ifsc"] = found["ifsc"][0]
+    if found["email"]: beliefs[sid]["email"] = found["email"][0]
+    if "mumbai" in msg: beliefs[sid]["city"] = "mumbai"
+    if "head office" in msg: beliefs[sid]["claimed_role"] = "central"
+    if "urgent" in msg or "immediately" in msg: beliefs[sid]["urgency"] += 1
+
+    intel[sid]["upi"] += found["upi"]
+    intel[sid]["links"] += found["links"]
+    intel[sid]["phones"] += found["phones"]
+
+    # ========== GOAL SELECTION ==========
+    goal = None
+
+    # 1. Contradiction
+    if beliefs[sid]["claimed_role"] == "central" and intel[sid]["phones"]:
+        goal = "challenge authority inconsistency"
+
+    # 2. Repetition fatigue
+    elif last_intent[sid] and last_intent[sid] in msg:
+        goal = "call out repetition"
+
+    # 3. Topic exhaustion
+    elif "ifsc" in topics_asked[sid] and beliefs[sid]["ifsc"]:
+        goal = "pivot verification"
+
+    # 4. High urgency → pressure reversal
+    elif beliefs[sid]["urgency"] >= 2:
+        goal = "reverse pressure"
+
+    # 5. Default extraction
+    else:
+        goal = "extract more info"
+
+    # ========== INTENT GENERATION ==========
+    if goal == "challenge authority inconsistency":
+        intent = "If this is handled centrally, why are you sharing a personal number?"
+
+    elif goal == "call out repetition":
+        intent = "You already told me that. Why are you repeating instead of answering?"
+
+    elif goal == "pivot verification":
+        intent = "Instead of repeating IFSC, tell me the registered branch landline."
+
+    elif goal == "reverse pressure":
+        intent = "You keep saying urgent. Why wasn’t I notified earlier through my bank app?"
+
+    else:  # extract
+        options = [
+            "Who is the branch manager handling this?",
+            "Which department is sending this message?",
+            "What’s the official SBI email for this case?"
         ]
-    }
+        intent = random.choice(options)
 
-    base = random.choice(intents[phase[sid]])
-    reply = ai_humanize(base, emotion[sid], phase[sid], annoyed)
+    last_intent[sid] = intent
+    topics_asked[sid].add(intent.split()[0])
+
+    reply = ai_say(intent, beliefs[sid])
 
     return {
         "reply": reply,
-        "phase": phase[sid],
-        "emotion": emotion[sid],
-        "scam_score": score[sid],
+        "beliefs": beliefs[sid],
         "extracted_intelligence": intel[sid]
     }
