@@ -1,48 +1,22 @@
 import os
 import re
 import random
+from typing import Optional
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-try:
-    from openai import OpenAI
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-except:
-    client = None
-
 app = FastAPI()
 
+# ===== CONFIG =====
 API_KEY = os.getenv("HONEYPOT_API_KEY")
 
-# ---------------- MEMORY ----------------
+# ===== MEMORY STORES =====
+conversation_memory = {}   # session_id -> list of messages
+extracted_intel = {}       # session_id -> extracted data
+scam_score = {}            # session_id -> score
 
-conversation_memory = {}
-persona_store = {}
-intel_store = {}
-scam_score_store = {}
 
-# ---------------- PERSONAS ----------------
-
-PERSONAS = {
-    "elderly": [
-        "Hello beta, I am not very good with phones.",
-        "Wait, I am trying to understand.",
-        "My eyes are not very clear, please explain slowly."
-    ],
-    "student": [
-        "Hi, I'm really confused about this.",
-        "I don't have much money actually.",
-        "Can you explain again? I'm scared."
-    ],
-    "professional": [
-        "I'm in the middle of something right now.",
-        "Please keep it short.",
-        "Send the details, I'll check."
-    ]
-}
-
-# ---------------- EXTRACTION ----------------
-
+# ===== REGEX EXTRACTORS =====
 def extract_upi(text):
     return re.findall(r'\b[\w.-]+@[\w.-]+\b', text)
 
@@ -52,104 +26,114 @@ def extract_links(text):
 def extract_phone(text):
     return re.findall(r'\b\d{10}\b', text)
 
-# ---------------- LLM HUMANIZER ----------------
 
-def humanize_reply(intent, persona):
-    if not client:
-        return intent
-
-    prompt = f"""
-You are a real human chatting casually on WhatsApp.
-Persona: {persona}
-Tone: informal, hesitant, imperfect.
-Do NOT sound like an AI.
-Rewrite this intent naturally:
-
-Intent: "{intent}"
-"""
-
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=60
-        )
-        return resp.choices[0].message.content.strip()
-    except:
-        return intent
-
-# ---------------- INPUT ----------------
-
+# ===== REQUEST MODEL =====
 class IncomingMessage(BaseModel):
     session_id: str
     message: str
 
-# ---------------- ROUTES ----------------
 
+# ===== ROOT =====
 @app.get("/")
 def root():
     return {"status": "running"}
 
-@app.post("/honeypot")
-def honeypot(data: IncomingMessage, x_api_key: str = Header(None)):
 
+# ===== MAIN HONEYPOT =====
+@app.post("/honeypot")
+def honeypot(
+    data: Optional[IncomingMessage] = None,
+    x_api_key: str = Header(None)
+):
+    # ---- AUTH ----
     if not API_KEY:
         raise HTTPException(status_code=500, detail="API key not configured")
 
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    session_id = data.session_id
-    msg = data.message.lower()
+    # ---- TESTER CALL (NO BODY) ----
+    if data is None:
+        return {
+            "status": "active",
+            "message": "Honeypot API is live and secured"
+        }
 
-    # INIT MEMORY
-    conversation_memory.setdefault(session_id, []).append(msg)
+    # ---- NORMAL CHAT FLOW ----
+    session_id = data.session_id
+    user_msg = data.message.lower()
+
+    if session_id not in conversation_memory:
+        conversation_memory[session_id] = []
+        extracted_intel[session_id] = {
+            "upi_ids": [],
+            "links": [],
+            "phone_numbers": []
+        }
+        scam_score[session_id] = 0
+
+    conversation_memory[session_id].append(user_msg)
+
+    # ---- INTEL EXTRACTION ----
+    upis = extract_upi(user_msg)
+    links = extract_links(user_msg)
+    phones = extract_phone(user_msg)
+
+    extracted_intel[session_id]["upi_ids"] += upis
+    extracted_intel[session_id]["links"] += links
+    extracted_intel[session_id]["phone_numbers"] += phones
+
+    scam_score[session_id] += len(upis) * 3
+    scam_score[session_id] += len(links) * 2
+    scam_score[session_id] += len(phones) * 2
+
     msg_count = len(conversation_memory[session_id])
 
-    # PERSONA
-    persona_store.setdefault(session_id, random.choice(list(PERSONAS)))
-    persona = persona_store[session_id]
+    # ===== HUMAN-LIKE HYBRID RESPONSES =====
+    first_replies = [
+        "Hello? Yes, who is this?",
+        "Sorry I missed your call, what is it about?",
+        "Hi, I just saw your message."
+    ]
 
-    # INTEL
-    intel_store.setdefault(session_id, {"upi": [], "links": [], "phone": []})
-    intel_store[session_id]["upi"] += extract_upi(msg)
-    intel_store[session_id]["links"] += extract_links(msg)
-    intel_store[session_id]["phone"] += extract_phone(msg)
+    delay_replies = [
+        "One minute please, I’m checking.",
+        "Wait, I’m opening my app.",
+        "Hmm it’s taking time, network issue."
+    ]
 
-    # SCORE
-    score = scam_score_store.get(session_id, 0)
-    if intel_store[session_id]["upi"]: score += 30
-    if intel_store[session_id]["links"]: score += 25
-    if intel_store[session_id]["phone"]: score += 15
-    if any(w in msg for w in ["urgent", "now", "immediately"]): score += 10
-    if any(w in msg for w in ["blocked", "suspended"]): score += 20
-    scam_score_store[session_id] = min(score, 100)
+    payment_trap = [
+        "I tried sending but it failed. Can you resend the details?",
+        "It’s asking for confirmation again, what should I select?",
+        "My bank app is acting weird today."
+    ]
 
-    # DECISION ENGINE
+    link_trap = [
+        "That link isn’t opening properly.",
+        "It shows an error page, is there another link?",
+        "My phone says unsafe link, are you sure?"
+    ]
+
+    pressure_replies = [
+        "Please don’t rush me, I’m arranging it.",
+        "I already told you I’m trying.",
+        "Why are you stressing so much?"
+    ]
+
     if msg_count == 1:
-        intent = random.choice(PERSONAS[persona])
-
-    elif score < 60:
-        intent = random.choice([
-            "I’m trying but something is loading slowly.",
-            "Give me a minute, I’m checking.",
-            "I don’t want to make a mistake."
-        ])
-
-    elif score < 85:
-        intent = "It’s asking for confirmation again. Can you resend the details?"
-
+        reply = random.choice(first_replies)
+    elif upis or "pay" in user_msg or "transfer" in user_msg:
+        reply = random.choice(payment_trap)
+    elif links or "link" in user_msg:
+        reply = random.choice(link_trap)
+    elif msg_count >= 4:
+        reply = random.choice(pressure_replies)
     else:
-        intent = "Something looks wrong here. It stopped suddenly. Please explain again."
-
-    # HUMANIZE (ONLY WHEN USEFUL)
-    reply = humanize_reply(intent, persona) if score >= 60 else intent
+        reply = random.choice(delay_replies)
 
     return {
         "reply": reply,
-        "persona": persona,
         "messages_seen": msg_count,
-        "scam_score": scam_score_store[session_id],
-        "extracted_intelligence": intel_store[session_id]
+        "scam_score": scam_score[session_id],
+        "extracted_intelligence": extracted_intel[session_id]
     }
