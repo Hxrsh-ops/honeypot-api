@@ -4,150 +4,211 @@ import random
 import time
 from fastapi import FastAPI, Header, HTTPException, Request
 
-app = FastAPI()
+# ================= LLM SETUP =================
+LLM_ENABLED = bool(os.getenv("OPENAI_API_KEY"))
+if LLM_ENABLED:
+    try:
+        from openai import OpenAI
+        llm = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    except:
+        llm = None
+        LLM_ENABLED = False
+else:
+    llm = None
 
+# ================= APP =================
+app = FastAPI()
 API_KEY = os.getenv("HONEYPOT_API_KEY", "test-key")
 
-conversation_memory = {}
-extracted_intel = {}
-scam_score = {}
+# ================= MEMORY =================
+conversation = {}
+intel = {}
+score = {}
+phase = {}
+emotion = {}
+repeat_counter = {}
+last_reply_time = {}
 
-# ---------- UTILITIES ----------
+# ================= HELPERS =================
 def human_delay():
-    time.sleep(random.uniform(0.4, 1.2))
+    time.sleep(random.uniform(0.5, 1.4))
 
-def deep_find_message(obj):
+def extract_upi(t): return re.findall(r'\b[\w.-]+@[\w.-]+\b', t)
+def extract_links(t): return re.findall(r'https?://\S+', t)
+def extract_phone(t): return re.findall(r'\b\d{10}\b', t)
+
+def deep_find(obj, keys):
     if isinstance(obj, dict):
         for k, v in obj.items():
-            if k.lower() in ["message", "msg", "text", "content"] and isinstance(v, str):
+            if k.lower() in keys and isinstance(v, str):
                 return v
-            found = deep_find_message(v)
-            if found:
-                return found
+            found = deep_find(v, keys)
+            if found: return found
     elif isinstance(obj, list):
-        for item in obj:
-            found = deep_find_message(item)
-            if found:
-                return found
+        for i in obj:
+            found = deep_find(i, keys)
+            if found: return found
     return ""
 
-def deep_find_session(obj):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k.lower() in ["session_id", "session", "chat_id", "id"]:
-                return str(v)
-            found = deep_find_session(v)
-            if found:
-                return found
-    return "default-session"
+def calc_score(t):
+    s = 0
+    for k in ["upi","pay","otp","urgent","verify","blocked","account","security","freeze"]:
+        if k in t: s += 10
+    if extract_upi(t): s += 25
+    if extract_links(t): s += 20
+    if extract_phone(t): s += 15
+    return s
 
-def extract_upi(text):
-    return re.findall(r'\b[\w.-]+@[\w.-]+\b', text)
+def ai_humanize(intent, emo, ph, annoyed=False):
+    if not LLM_ENABLED or not llm:
+        return intent
 
-def extract_links(text):
-    return re.findall(r'https?://\S+', text)
+    tone = "annoyed and impatient" if annoyed else emo
 
-def extract_phone(text):
-    return re.findall(r'\b\d{10}\b', text)
+    prompt = f"""
+You are a real human chatting on WhatsApp.
 
-def score_message(text):
-    score = 0
-    keywords = ["upi", "pay", "otp", "urgent", "verify", "transfer", "blocked"]
-    for k in keywords:
-        if k in text:
-            score += 10
-    if extract_upi(text):
-        score += 30
-    if extract_links(text):
-        score += 20
-    if extract_phone(text):
-        score += 15
-    return score
+Emotion: {tone}
+Phase: {ph}
 
-# ---------- ROUTES ----------
+Rules:
+- sound human, imperfect
+- short (1–2 lines)
+- no AI tone
+- no explanations
+- no emojis
+
+Rewrite naturally:
+"{intent}"
+"""
+
+    try:
+        r = llm.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0.75,
+            max_tokens=60
+        )
+        out = r.choices[0].message.content.strip()
+        return out if len(out) < 200 else intent
+    except:
+        return intent
+
+# ================= ROUTES =================
 @app.get("/")
 def root():
     return {"status": "running"}
 
 @app.post("/honeypot")
-async def honeypot(request: Request, x_api_key: str = Header(None)):
+async def honeypot(req: Request, x_api_key: str = Header(None)):
+
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
     try:
-        payload = await request.json()
+        payload = await req.json()
     except:
         payload = {}
 
-    user_msg = deep_find_message(payload).strip()
-    session_id = deep_find_session(payload)
+    msg = deep_find(payload, ["message","msg","text","content"]).strip()
+    sid = deep_find(payload, ["session_id","session","chat_id","id"]) or "default"
 
-    # ---- GUVI TESTER ONLY (EMPTY BODY) ----
-    if not payload or not user_msg:
+    # Tester ping
+    if not payload or not msg:
         return {"reply": "OK"}
 
     human_delay()
+    msg = msg.lower()
 
-    if session_id not in conversation_memory:
-        conversation_memory[session_id] = []
-        extracted_intel[session_id] = {
-            "upi_ids": [],
-            "links": [],
-            "phone_numbers": []
-        }
-        scam_score[session_id] = 0
+    # INIT
+    if sid not in conversation:
+        conversation[sid] = []
+        intel[sid] = {"upi":[], "links":[], "phone":[]}
+        score[sid] = 0
+        phase[sid] = "confusion"
+        emotion[sid] = "neutral"
+        repeat_counter[sid] = 0
+        last_reply_time[sid] = time.time()
 
-    user_msg = user_msg.lower()
-    conversation_memory[session_id].append(user_msg)
-
-    extracted_intel[session_id]["upi_ids"] += extract_upi(user_msg)
-    extracted_intel[session_id]["links"] += extract_links(user_msg)
-    extracted_intel[session_id]["phone_numbers"] += extract_phone(user_msg)
-
-    scam_score[session_id] = min(100, scam_score[session_id] + score_message(user_msg))
-    msg_count = len(conversation_memory[session_id])
-
-    # ---------- HUMAN RESPONSE ENGINE ----------
-    openers = [
-        "Hello?",
-        "Yes, who is this?",
-        "Sorry I missed your message.",
-        "What is this regarding?"
-    ]
-
-    delays = [
-        "Wait a minute.",
-        "Network is slow.",
-        "Phone is hanging.",
-        "Let me check."
-    ]
-
-    bait = [
-        "I tried paying but it failed.",
-        "It shows pending on my side.",
-        "Can you resend the details?"
-    ]
-
-    suspicion = [
-        "Why are you rushing me?",
-        "This feels risky.",
-        "My bank warned me about scams."
-    ]
-
-    if msg_count == 1:
-        reply = random.choice(openers)
-    elif scam_score[session_id] >= 70:
-        reply = random.choice(suspicion)
-    elif any(k in user_msg for k in ["upi", "pay", "transfer"]):
-        reply = random.choice(bait)
-    elif "http" in user_msg:
-        reply = "The link is not opening."
+    # Repeat detection
+    if conversation[sid] and msg == conversation[sid][-1]:
+        repeat_counter[sid] += 1
     else:
-        reply = random.choice(delays)
+        repeat_counter[sid] = 0
+
+    conversation[sid].append(msg)
+
+    # Intel
+    intel[sid]["upi"] += extract_upi(msg)
+    intel[sid]["links"] += extract_links(msg)
+    intel[sid]["phone"] += extract_phone(msg)
+    score[sid] = min(100, score[sid] + calc_score(msg))
+
+    # Phase transitions
+    if score[sid] > 30 and phase[sid] == "confusion":
+        phase[sid] = "verify"; emotion[sid] = "uneasy"
+    if score[sid] > 55 and phase[sid] == "verify":
+        phase[sid] = "delay"; emotion[sid] = "worried"
+    if score[sid] > 75 and phase[sid] == "delay":
+        phase[sid] = "pressure_reverse"; emotion[sid] = "suspicious"
+    if score[sid] > 90:
+        phase[sid] = "extract"; emotion[sid] = "annoyed"
+
+    # Time-based impatience
+    annoyed = False
+    if time.time() - last_reply_time[sid] < 3:
+        annoyed = True
+
+    last_reply_time[sid] = time.time()
+
+    # Memory callback
+    if repeat_counter[sid] >= 2:
+        intent = "You already said the same thing. Why are you repeating this?"
+        reply = ai_humanize(intent, emotion[sid], phase[sid], annoyed=True)
+        return {
+            "reply": reply,
+            "phase": phase[sid],
+            "emotion": emotion[sid],
+            "scam_score": score[sid],
+            "extracted_intelligence": intel[sid]
+        }
+
+    # Intent engine
+    intents = {
+        "confusion": [
+            "Which account are you talking about?",
+            "I don’t understand what this is.",
+            "Can you explain clearly?"
+        ],
+        "verify": [
+            "Why are you messaging instead of calling from registered number?",
+            "Tell me the branch name linked to this account.",
+            "What city branch is this?"
+        ],
+        "delay": [
+            "I’m outside, need time.",
+            "My documents are at home.",
+            "I’ll check once I reach."
+        ],
+        "pressure_reverse": [
+            "Earlier you said 2 hours, now it’s immediate?",
+            "Why can’t I just visit the bank?",
+            "This is sounding strange."
+        ],
+        "extract": [
+            "Before sharing anything, tell me IFSC and branch.",
+            "What’s the official SBI email for this?",
+            "Which branch manager is handling this?"
+        ]
+    }
+
+    base = random.choice(intents[phase[sid]])
+    reply = ai_humanize(base, emotion[sid], phase[sid], annoyed)
 
     return {
         "reply": reply,
-        "messages_seen": msg_count,
-        "scam_score": scam_score[session_id],
-        "extracted_intelligence": extracted_intel[session_id]
+        "phase": phase[sid],
+        "emotion": emotion[sid],
+        "scam_score": score[sid],
+        "extracted_intelligence": intel[sid]
     }
