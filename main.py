@@ -3,11 +3,8 @@ import re
 import uuid
 import random
 import time
-from typing import Optional
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, Header, HTTPException, Request
 
-# ================= APP =================
 app = FastAPI()
 
 API_KEY = os.getenv("HONEYPOT_API_KEY")
@@ -15,7 +12,7 @@ API_KEY = os.getenv("HONEYPOT_API_KEY")
 # ================= MEMORY =================
 conversation_memory = {}
 extracted_intel = {}
-last_reply_cache = {}
+reply_history = {}
 
 # ================= REGEX =================
 def extract_upi(text):
@@ -27,16 +24,12 @@ def extract_links(text):
 def extract_phone(text):
     return re.findall(r'\b\d{10}\b', text)
 
-# ================= REQUEST MODEL =================
-class IncomingMessage(BaseModel):
-    message: str
-    session_id: Optional[str] = None  # evaluator-safe
-
 # ================= HUMAN DATASETS (EXPANDED – NEVER REDUCED) =================
 
 FILLERS = [
     "hmm", "uh", "uhh", "wait", "look", "see", "ok", "ah", "erm", "well",
-    "hold on", "one sec", "just a sec", "hang on"
+    "hold on", "one sec", "just a sec", "hang on",
+    "listen", "bro", "ya", "umm", "idk", "tbh"
 ]
 
 CONFUSION_REPLIES = [
@@ -54,7 +47,9 @@ CONFUSION_REPLIES = [
     "this message came out of nowhere honestly",
     "I don’t remember doing anything unusual",
     "something doesn’t feel clear here",
-    "can you explain from the beginning?"
+    "can you explain from the beginning?",
+    "why am I hearing about this only now?",
+    "this is kinda confusing ngl"
 ]
 
 VERIFICATION_REPLIES = [
@@ -72,7 +67,8 @@ VERIFICATION_REPLIES = [
     "who is the manager handling this?",
     "can you tell me your employee ID?",
     "this should reflect in net banking right?",
-    "why didn’t the app notify me?"
+    "why didn’t the app notify me?",
+    "banks normally send proper alerts, this feels odd"
 ]
 
 RESISTANCE_SHORT = [
@@ -82,7 +78,8 @@ RESISTANCE_SHORT = [
     "this doesn’t seem right",
     "I’m not convinced",
     "this sounds risky",
-    "I don’t trust this yet"
+    "I don’t trust this yet",
+    "nah this feels weird"
 ]
 
 RESISTANCE_MEDIUM = [
@@ -92,7 +89,8 @@ RESISTANCE_MEDIUM = [
     "this approach feels very unprofessional",
     "I’ve been warned about messages like this",
     "I prefer verifying things on my own",
-    "I’m uncomfortable with how this is going"
+    "I’m uncomfortable with how this is going",
+    "this is not how official communication works"
 ]
 
 RESISTANCE_LONG = [
@@ -113,7 +111,10 @@ RESISTANCE_LONG = [
     "That itself is a red flag for me.",
 
     "I’m not ignoring this, but I won’t act blindly. "
-    "I’ll verify independently and then decide."
+    "I’ll verify independently and then decide.",
+
+    "this whole thing feels engineered to scare me into acting quickly, "
+    "and that’s exactly how scams usually work."
 ]
 
 FATIGUE_REPLIES = [
@@ -123,43 +124,42 @@ FATIGUE_REPLIES = [
     "this conversation is going in circles",
     "you keep pushing without clarifying anything",
     "this is getting exhausting honestly",
-    "I’ve asked you the same thing again and again"
+    "I’ve asked you the same thing again and again",
+    "you’re just repeating yourself now"
 ]
 
-# ================= UTILS =================
-def mutate(text):
-    filler = random.choice(FILLERS)
-    if random.random() < 0.5:
-        return f"{filler}, {text}"
+# ================= HUMANIZATION LOGIC =================
+def humanize(text):
+    if random.random() < 0.4:
+        return f"{random.choice(FILLERS)}, {text}"
+    if random.random() < 0.2:
+        return f"{text} honestly"
     return text
 
-def avoid_repeat(session_id, text):
-    last = last_reply_cache.get(session_id)
-    if last == text:
-        return mutate(text)
-    last_reply_cache[session_id] = text
-    return text
+def avoid_repetition(session_id, candidate):
+    used = reply_history.setdefault(session_id, set())
+    if candidate in used:
+        candidate = humanize(candidate)
+    used.add(candidate)
+    return candidate
 
-# ================= CORE LOGIC =================
-def generate_human_reply(session_id, msg):
+def choose_reply(session_id, msg):
     turns = len(conversation_memory[session_id])
 
-    if turns > 6 and msg.count("account") > 1:
-        reply = random.choice(FATIGUE_REPLIES)
-
-    elif turns < 2:
-        reply = random.choice(CONFUSION_REPLIES)
-
-    elif any(k in msg.lower() for k in ["otp", "account", "verify", "urgent"]):
-        reply = random.choice(VERIFICATION_REPLIES)
-
-    elif turns < 5:
-        reply = random.choice(RESISTANCE_MEDIUM)
-
+    if turns >= 8:
+        pool = FATIGUE_REPLIES
+    elif any(k in msg for k in ["otp", "account", "verify", "urgent"]):
+        pool = VERIFICATION_REPLIES
+    elif turns <= 2:
+        pool = CONFUSION_REPLIES
+    elif turns <= 4:
+        pool = RESISTANCE_MEDIUM
     else:
-        reply = random.choice(RESISTANCE_LONG)
+        pool = RESISTANCE_LONG
 
-    return avoid_repeat(session_id, reply)
+    reply = random.choice(pool)
+    reply = humanize(reply)
+    return avoid_repetition(session_id, reply)
 
 # ================= ROUTES =================
 @app.get("/")
@@ -167,33 +167,40 @@ def root():
     return {"status": "running"}
 
 @app.post("/honeypot")
-async def honeypot(data: IncomingMessage, x_api_key: str = Header(None)):
+async def honeypot(request: Request, x_api_key: str = Header(None)):
     if not API_KEY:
         raise HTTPException(status_code=500, detail="API key not configured")
 
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    session_id = data.session_id or str(uuid.uuid4())
-    msg = data.message.strip()
+    body = await request.json()
 
-    if session_id not in conversation_memory:
-        conversation_memory[session_id] = []
-        extracted_intel[session_id] = {
-            "upi_ids": [],
-            "links": [],
-            "phone_numbers": []
-        }
+    # evaluator-safe input extraction
+    msg = (
+        body.get("message")
+        or body.get("text")
+        or body.get("input")
+        or str(body)
+    )
 
-    conversation_memory[session_id].append(msg)
+    session_id = body.get("session_id") or str(uuid.uuid4())
+
+    conversation_memory.setdefault(session_id, []).append(msg)
+
+    extracted_intel.setdefault(session_id, {
+        "upi_ids": [],
+        "links": [],
+        "phone_numbers": []
+    })
 
     extracted_intel[session_id]["upi_ids"] += extract_upi(msg)
     extracted_intel[session_id]["links"] += extract_links(msg)
     extracted_intel[session_id]["phone_numbers"] += extract_phone(msg)
 
-    reply = generate_human_reply(session_id, msg)
+    reply = choose_reply(session_id, msg.lower())
 
-    time.sleep(random.uniform(0.3, 1.2))  # typing realism
+    time.sleep(random.uniform(0.4, 1.4))  # typing realism
 
     return {
         "reply": reply,
