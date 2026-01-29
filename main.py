@@ -2,7 +2,7 @@ import os
 import re
 import uuid
 import random
-import time
+import asyncio
 from fastapi import FastAPI, Header, HTTPException, Request
 
 app = FastAPI()
@@ -144,6 +144,9 @@ def avoid_repetition(session_id, candidate):
     return candidate
 
 def choose_reply(session_id, msg):
+    if len(reply_history.get(session_id, [])) > 40:
+        reply_history[session_id].clear()
+
     turns = len(conversation_memory[session_id])
 
     if turns >= 8:
@@ -174,15 +177,21 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except:
+        body = {}
 
-    # evaluator-safe input extraction
     msg = (
         body.get("message")
         or body.get("text")
         or body.get("input")
-        or str(body)
+        or body.get("msg")
+        or body.get("data")
+        or "hello"
     )
+
+    msg = str(msg)
 
     session_id = body.get("session_id") or str(uuid.uuid4())
 
@@ -198,9 +207,13 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
     extracted_intel[session_id]["links"] += extract_links(msg)
     extracted_intel[session_id]["phone_numbers"] += extract_phone(msg)
 
+    extracted_intel[session_id]["upi_ids"] = list(set(extracted_intel[session_id]["upi_ids"]))
+    extracted_intel[session_id]["links"] = list(set(extracted_intel[session_id]["links"]))
+    extracted_intel[session_id]["phone_numbers"] = list(set(extracted_intel[session_id]["phone_numbers"]))
+
     reply = choose_reply(session_id, msg.lower())
 
-    time.sleep(random.uniform(0.4, 1.4))  # typing realism
+    await asyncio.sleep(random.uniform(0.4, 1.4))
 
     return {
         "reply": reply,
