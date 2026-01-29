@@ -1,5 +1,4 @@
 import os
-import re
 import time
 import random
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -13,16 +12,28 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # ================= MEMORY =================
 sessions = {}
 
-# ================= PERSONAS =================
-PERSONAS = {
-    "elder": "You are an elderly bank customer. Slightly slow, cautious, repeats questions.",
-    "professional": "You are a busy working professional. Short replies, annoyed by urgency.",
-    "genz": "You are a Gen-Z user. Casual language, suspicious, slang allowed."
+# ================= PHASES =================
+PHASES = [
+    "confusion",
+    "skepticism",
+    "verification",
+    "challenge",
+    "annoyance",
+    "shutdown"
+]
+
+PHASE_BEHAVIOR = {
+    "confusion": "You are confused, cautious, asking basic questions.",
+    "skepticism": "You are doubtful and uneasy, questioning authenticity.",
+    "verification": "You actively ask for verifiable details.",
+    "challenge": "You point out inconsistencies and push back.",
+    "annoyance": "You are irritated and slow to cooperate.",
+    "shutdown": "You are tired, defensive, and resistant."
 }
 
 # ================= HELPERS =================
 def human_delay():
-    time.sleep(random.uniform(0.4, 1.2))
+    time.sleep(random.uniform(0.6, 1.5))
 
 def extract_text(payload):
     if isinstance(payload, dict):
@@ -45,73 +56,88 @@ def analyze_signals(text):
         "urgency": any(w in t for w in ["urgent", "immediately", "blocked", "freeze"]),
         "money": any(w in t for w in ["otp", "account", "upi", "transfer"]),
         "authority": any(w in t for w in ["bank", "sbi", "manager", "head office"]),
-        "repeat": any(w in t for w in ["again", "already told"]),
-        "link": "http" in t
+        "repeat": any(w in t for w in ["again", "already", "as i said"]),
     }
 
-def extract_intel(text, store):
-    store["phones"] += re.findall(r"\b\d{10}\b", text)
-    store["emails"] += re.findall(r"[\w\.-]+@[\w\.-]+\.\w+", text)
-    store["links"] += re.findall(r"https?://\S+", text)
-    store["upi"] += re.findall(r"\b[\w.-]+@[\w.-]+\b", text)
+def advance_phase(session, signals):
+    idx = PHASES.index(session["phase"])
+
+    if session["turns"] < 2:
+        return "confusion"
+    if signals["money"] and idx < 3:
+        return PHASES[min(idx + 1, len(PHASES) - 1)]
+    if signals["repeat"] or signals["urgency"]:
+        return PHASES[min(idx + 1, len(PHASES) - 1)]
+    return session["phase"]
 
 # ================= SYSTEM PROMPT =================
-BASE_SYSTEM_PROMPT = """
-You are NOT an AI. You are a real human chatting on WhatsApp.
+SYSTEM_PROMPT = """
+You are a REAL HUMAN chatting on WhatsApp.
 
-Rules:
-- Never mention AI, bots, or safety policies
-- Short, imperfect replies
-- Sometimes confused, annoyed, sarcastic
-- NEVER share OTP, account number, UPI
-- Ask verification questions
-- Waste scammer time
-- Extract details indirectly
-- Humans repeat and hesitate — that is OK
+CRITICAL:
+- You are NOT an AI.
+- Never mention AI, bots, policies, or safety systems.
+- You speak like a normal person, not smart, not formal.
+- Replies should feel human: slightly long, emotional, imperfect.
+- NEVER share OTP, account number, UPI, or real personal info.
+- You are suspicious and defensive.
+- You are allowed to repeat ideas, but NOT exact sentences.
+- Avoid short replies like "wait what" or "this feels off".
 """
 
 def generate_reply(session, message, signals):
-    persona = session["persona"]
-    history = session["history"][-8:]
+    phase = session["phase"]
+    history = session["history"][-6:]
 
-    behavior = []
-    if signals["urgency"]: behavior.append("Scammer is rushing you.")
-    if signals["money"]: behavior.append("Scammer wants sensitive info.")
-    if signals["authority"]: behavior.append("Scammer claims authority.")
-    if signals["repeat"]: behavior.append("Scammer is repeating.")
+    controller_instruction = f"""
+Current phase: {phase}
+Phase behavior: {PHASE_BEHAVIOR[phase]}
 
-    prompt = f"""
-Persona:
-{PERSONAS[persona]}
+Rules for this reply:
+- Reply length: 2–4 sentences
+- Do NOT repeat previous wording
+- Sound like a real person texting
+- Express emotion naturally
+- Ask at least one question unless phase is 'shutdown'
+"""
 
-Conversation:
+    user_prompt = f"""
+Conversation so far:
 {chr(10).join(history)}
 
-Observations:
-{'; '.join(behavior) if behavior else 'None'}
+Latest scammer message:
+{message}
 
-Reply naturally as a human.
+Observations:
+Urgency={signals["urgency"]}, Authority={signals["authority"]}, Money={signals["money"]}
+
+{controller_instruction}
 """
 
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": BASE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
             ],
-            temperature=0.9,
-            max_tokens=90
+            temperature=0.95,
+            max_tokens=140
         )
-        return resp.choices[0].message.content.strip()
-    except:
-        return random.choice([
-            "wait what?",
-            "this feels off",
-            "why are you rushing me",
-            "i need to verify this",
-            "my bank warned about scams"
-        ])
+        reply = resp.choices[0].message.content.strip()
+
+        # hard guard against ultra-short replies
+        if len(reply.split()) < 8:
+            reply += " I’m not comfortable rushing into anything like this."
+
+        return reply
+
+    except Exception:
+        return (
+            "I’m not comfortable with how this is being handled. "
+            "You’re pushing for sensitive details without proper verification, "
+            "and I need clear answers before continuing."
+        )
 
 # ================= ROUTES =================
 @app.get("/")
@@ -131,7 +157,7 @@ async def honeypot(req: Request, x_api_key: str = Header(None)):
 
     message = extract_text(payload)
 
-    # Tester ping / empty payload
+    # tester ping / empty request
     if not message:
         return {"reply": "OK", "messages_seen": 0}
 
@@ -142,17 +168,16 @@ async def honeypot(req: Request, x_api_key: str = Header(None)):
     if sid not in sessions:
         sessions[sid] = {
             "turns": 0,
-            "persona": random.choice(list(PERSONAS.keys())),
-            "history": [],
-            "intel": {"phones": [], "emails": [], "links": [], "upi": []}
+            "phase": "confusion",
+            "history": []
         }
 
     session = sessions[sid]
     session["turns"] += 1
     session["history"].append(f"Scammer: {message}")
 
-    extract_intel(message, session["intel"])
     signals = analyze_signals(message)
+    session["phase"] = advance_phase(session, signals)
 
     reply = generate_reply(session, message, signals)
     session["history"].append(f"You: {reply}")
