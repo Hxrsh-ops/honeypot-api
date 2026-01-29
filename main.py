@@ -1,283 +1,163 @@
 import os
-import random
+import re
 import time
+import random
 from fastapi import FastAPI, Header, HTTPException, Request
+from openai import OpenAI
 
-# ================== APP ==================
+# ================= CONFIG =================
 app = FastAPI()
 API_KEY = os.getenv("HONEYPOT_API_KEY", "test-key")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ================== MASSIVE HUMAN DATA BANK ==================
-
-CONFUSED = [
-    "wait, what is this about?",
-    "which account are you talking about?",
-    "i don’t remember doing anything wrong",
-    "i’m not sure i understand this message",
-    "why am i getting this now?",
-    "what problem are you referring to?",
-    "i just woke up, explain slowly",
-    "sorry, i’m a bit lost here",
-    "this is the first time i’m hearing this",
-    "can you explain in simple words?",
-    "i don’t usually get messages like this",
-    "what exactly happened?",
-    "is this savings or salary account?",
-    "i didn’t receive any alert before",
-    "what suspicious activity?",
-    "i haven’t checked my account today",
-    "nothing like this showed in my app",
-    "i didn’t get any sms",
-    "why is this sudden?",
-    "i’m not able to follow this",
-    "can you repeat that?",
-    "i’m not good with banking terms",
-    "this sounds very sudden",
-    "what do you mean compromised?",
-    "i’m genuinely confused now",
-    "are you sure this is my account?",
-    "i haven’t shared anything",
-    "what exactly do you need from me?",
-    "i’ve never faced this before",
-    "why wasn’t i informed earlier?",
-    "this doesn’t ring a bell",
-    "i don’t remember any issue",
-    "i checked balance yesterday",
-    "everything looked normal",
-    "this is confusing me more"
-]
-
-VERIFY = [
-    "why are you messaging instead of calling?",
-    "my bank usually calls me",
-    "which branch is this related to?",
-    "can you tell me the branch name?",
-    "who exactly is handling this?",
-    "what department are you from?",
-    "why didn’t i get an email first?",
-    "is there a reference number?",
-    "how can i verify this independently?",
-    "which city office is this?",
-    "why does this not show in my bank app?",
-    "can you tell me the last transaction?",
-    "what is your official designation?",
-    "why are you using this number?",
-    "what’s the registered email for this?",
-    "why am i not seeing this in net banking?",
-    "do you have a complaint id?",
-    "who raised this alert?",
-    "what is the escalation process?",
-    "which team detected this?",
-    "what is your employee id?",
-    "why was i not notified earlier?",
-    "is this automated or manual?",
-    "why does your number look personal?",
-    "can i cross-check with my branch?",
-    "why isn’t this from sbi domain?",
-    "which division is this?",
-    "can i verify by calling customer care?",
-    "why does this feel rushed?",
-    "how did you detect this activity?",
-    "what triggered this alert?",
-    "why didn’t i get ivr call?",
-    "what’s the standard protocol?"
-]
-
-STALL = [
-    "i’m outside right now",
-    "i’m driving, can’t check",
-    "phone battery is low",
-    "network is very bad",
-    "i need to reach home first",
-    "i don’t have documents with me",
-    "can i get back to you later?",
-    "i’m in a meeting",
-    "i’ll check once i reach office",
-    "i don’t have my passbook",
-    "i need to find my papers",
-    "i’m traveling right now",
-    "i’ll call you later",
-    "give me some time please",
-    "i can’t check now",
-    "my phone is hanging",
-    "i need to charge my phone",
-    "i’m on the road",
-    "i’m with someone",
-    "i’ll message once free",
-    "let me sit and check",
-    "i don’t want to rush this",
-    "i need a quiet place",
-    "i’m at work",
-    "i’ll look into it shortly",
-    "i need to calm down",
-    "this is too sudden",
-    "i can’t think clearly",
-    "give me a few minutes",
-    "i need to check with family",
-    "i’m busy right now",
-    "i’ll get back to you"
-]
-
-ANNOYED = [
-    "why are you rushing me so much?",
-    "i already told you i need time",
-    "stop repeating the same thing",
-    "you’re not answering my question",
-    "this is getting irritating",
-    "i’m trying to cooperate",
-    "why are you not listening?",
-    "you’re pressuring me",
-    "you said something else earlier",
-    "this doesn’t make sense",
-    "why is everything urgent?",
-    "i’m not comfortable with this",
-    "you’re confusing me",
-    "your answers are unclear",
-    "details keep changing",
-    "this feels very off",
-    "this is frustrating",
-    "i’m losing patience",
-    "you’re dodging questions",
-    "this is not convincing",
-    "stop pushing me",
-    "this is weird now",
-    "why can’t you answer properly",
-    "i don’t trust this",
-    "this is annoying",
-    "you’re making it worse",
-    "this is suspicious",
-    "i don’t like this tone",
-    "this is unnecessary pressure"
-]
-
-GENZ = [
-    "wait what??",
-    "bro what is this",
-    "nah this feels sus",
-    "this ain’t normal",
-    "hold on lemme check",
-    "bruh",
-    "why so urgent tho",
-    "ngl this feels fake",
-    "stop spamming pls",
-    "idk man",
-    "this doesn’t add up",
-    "this is sketchy",
-    "lowkey looks fake",
-    "nah i’m good",
-    "why you rushing me",
-    "this is weird af",
-    "why you texting like this",
-    "my bank never texts like this",
-    "send proper details first",
-    "how do i verify this",
-    "this looks fake tbh",
-    "i’m not sharing anything",
-    "lemme think",
-    "idk about this",
-    "something’s off",
-    "can you chill for a sec",
-    "this stressing me out",
-    "nah bro",
-    "this ain’t convincing",
-    "stop repeating",
-    "this is sus ngl",
-    "i’ll check later",
-    "not doing this rn",
-    "sounds like a scam",
-    "yeah no"
-]
-
-FILLERS = [
-    "uhh", "umm", "hmm", "uh", "huh",
-    "hmm wait", "uh idk", "umm okay",
-    "hmm not sure", "bruh wait", "lol wait",
-    "uhh hold on", "umm give me a sec",
-    "hmm pause", "uhh sorry", "hmm okay",
-    "uh wait a min", "hmm idk man"
-]
-
-DATASETS = {
-    "confused": CONFUSED,
-    "verify": VERIFY,
-    "stall": STALL,
-    "annoyed": ANNOYED,
-    "genz": GENZ
-}
-
-# ================== SESSION STATE ==================
+# ================= MEMORY =================
 sessions = {}
 
+# ================= PERSONAS =================
+PERSONAS = {
+    "elder": "You are an elderly bank customer. Slightly slow, cautious, repeats questions.",
+    "professional": "You are a busy working professional. Short replies, annoyed by urgency.",
+    "genz": "You are a Gen-Z user. Casual language, suspicious, slang allowed."
+}
+
+# ================= HELPERS =================
 def human_delay():
-    time.sleep(random.uniform(0.4, 1.1))
+    time.sleep(random.uniform(0.4, 1.2))
 
-def rotate_mood(turn):
-    if turn < 2:
-        return "confused"
-    elif turn < 4:
-        return "verify"
-    elif turn < 6:
-        return "stall"
-    elif turn < 8:
-        return "annoyed"
-    else:
-        return random.choice(list(DATASETS.keys()))
+def extract_text(payload):
+    if isinstance(payload, dict):
+        for k, v in payload.items():
+            if k.lower() in ["message", "msg", "text", "content"] and isinstance(v, str):
+                return v
+            found = extract_text(v)
+            if found:
+                return found
+    if isinstance(payload, list):
+        for i in payload:
+            found = extract_text(i)
+            if found:
+                return found
+    return ""
 
-def choose_reply(session_id):
-    mood = sessions[session_id]["mood"]
-    used = sessions[session_id]["used"]
-    pool = DATASETS[mood]
+def analyze_signals(text):
+    t = text.lower()
+    return {
+        "urgency": any(w in t for w in ["urgent", "immediately", "blocked", "freeze"]),
+        "money": any(w in t for w in ["otp", "account", "upi", "transfer"]),
+        "authority": any(w in t for w in ["bank", "sbi", "manager", "head office"]),
+        "repeat": any(w in t for w in ["again", "already told"]),
+        "link": "http" in t
+    }
 
-    options = [r for r in pool if r not in used]
-    if not options:
-        used.clear()
-        options = pool
+def extract_intel(text, store):
+    store["phones"] += re.findall(r"\b\d{10}\b", text)
+    store["emails"] += re.findall(r"[\w\.-]+@[\w\.-]+\.\w+", text)
+    store["links"] += re.findall(r"https?://\S+", text)
+    store["upi"] += re.findall(r"\b[\w.-]+@[\w.-]+\b", text)
 
-    reply = random.choice(options)
-    used.add(reply)
+# ================= SYSTEM PROMPT =================
+BASE_SYSTEM_PROMPT = """
+You are NOT an AI. You are a real human chatting on WhatsApp.
 
-    if random.random() < 0.3:
-        reply = f"{random.choice(FILLERS)}… {reply}"
+Rules:
+- Never mention AI, bots, or safety policies
+- Short, imperfect replies
+- Sometimes confused, annoyed, sarcastic
+- NEVER share OTP, account number, UPI
+- Ask verification questions
+- Waste scammer time
+- Extract details indirectly
+- Humans repeat and hesitate — that is OK
+"""
 
-    return reply
+def generate_reply(session, message, signals):
+    persona = session["persona"]
+    history = session["history"][-8:]
 
-# ================== ROUTES ==================
+    behavior = []
+    if signals["urgency"]: behavior.append("Scammer is rushing you.")
+    if signals["money"]: behavior.append("Scammer wants sensitive info.")
+    if signals["authority"]: behavior.append("Scammer claims authority.")
+    if signals["repeat"]: behavior.append("Scammer is repeating.")
+
+    prompt = f"""
+Persona:
+{PERSONAS[persona]}
+
+Conversation:
+{chr(10).join(history)}
+
+Observations:
+{'; '.join(behavior) if behavior else 'None'}
+
+Reply naturally as a human.
+"""
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": BASE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.9,
+            max_tokens=90
+        )
+        return resp.choices[0].message.content.strip()
+    except:
+        return random.choice([
+            "wait what?",
+            "this feels off",
+            "why are you rushing me",
+            "i need to verify this",
+            "my bank warned about scams"
+        ])
+
+# ================= ROUTES =================
 @app.get("/")
 def root():
     return {"status": "running"}
 
 @app.post("/honeypot")
 async def honeypot(req: Request, x_api_key: str = Header(None)):
+
     if x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
+        raise HTTPException(status_code=401)
 
     try:
         payload = await req.json()
     except:
         payload = {}
 
-    message = payload.get("message", "")
-    session_id = payload.get("session_id", "default")
+    message = extract_text(payload)
 
-    if not payload or not message:
+    # Tester ping / empty payload
+    if not message:
         return {"reply": "OK", "messages_seen": 0}
 
     human_delay()
 
-    if session_id not in sessions:
-        sessions[session_id] = {
+    sid = "default"
+
+    if sid not in sessions:
+        sessions[sid] = {
             "turns": 0,
-            "used": set(),
-            "mood": "confused"
+            "persona": random.choice(list(PERSONAS.keys())),
+            "history": [],
+            "intel": {"phones": [], "emails": [], "links": [], "upi": []}
         }
 
-    sessions[session_id]["turns"] += 1
-    turn = sessions[session_id]["turns"]
-    sessions[session_id]["mood"] = rotate_mood(turn)
+    session = sessions[sid]
+    session["turns"] += 1
+    session["history"].append(f"Scammer: {message}")
 
-    reply = choose_reply(session_id)
+    extract_intel(message, session["intel"])
+    signals = analyze_signals(message)
+
+    reply = generate_reply(session, message, signals)
+    session["history"].append(f"You: {reply}")
 
     return {
         "reply": reply,
-        "messages_seen": turn
+        "messages_seen": session["turns"]
     }
