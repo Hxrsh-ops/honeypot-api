@@ -3,7 +3,7 @@ import re
 import uuid
 import random
 import asyncio
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, Request
 
 app = FastAPI()
 
@@ -164,32 +164,12 @@ def choose_reply(session_id, msg):
     reply = humanize(reply)
     return avoid_repetition(session_id, reply)
 
-# ================= AUTH HELPER =================
-def validate_api_key(x_api_key: str, authorization: str):
-    # If API key is not configured, allow (platform probe)
-    if not API_KEY:
-        return
-
-    provided = x_api_key or authorization
-
-    # If no key provided, allow (hackathon access probe)
-    if not provided:
-        return
-
-    provided = provided.replace("Bearer ", "").strip()
-
-    # If wrong key, allow but continue safely
-    if provided != API_KEY:
-        return
-
-
-# ================= ROOT (FOR HACKATHON PROBE) =================
-@app.api_route("/", methods=["GET", "POST"])
+# ================= ROOT (NO AUTH, NEVER FAILS) =================
+@app.api_route("/", methods=["GET", "POST", "OPTIONS"])
 async def root_probe():
     return {
         "status": "alive",
-        "service": "agentic-honeypot",
-        "message": "endpoint reachable"
+        "service": "agentic-honeypot"
     }
 
 # ================= HONEYPOT =================
@@ -199,7 +179,11 @@ async def honeypot(
     x_api_key: str = Header(None),
     authorization: str = Header(None)
 ):
-    validate_api_key(x_api_key, authorization)
+    # SOFT auth (NEVER throws error)
+    provided_key = x_api_key or authorization
+    if provided_key:
+        provided_key = provided_key.replace("Bearer ", "").strip()
+    authorized = (provided_key == API_KEY)
 
     try:
         body = await request.json()
@@ -241,5 +225,6 @@ async def honeypot(
     return {
         "reply": reply,
         "messages_seen": len(conversation_memory[session_id]),
-        "extracted_intelligence": extracted_intel[session_id]
+        "extracted_intelligence": extracted_intel[session_id],
+        "authorized": authorized
     }
