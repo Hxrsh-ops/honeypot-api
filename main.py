@@ -176,11 +176,7 @@ def validate_api_key(x_api_key: str, authorization: str):
 
 # ================= ROOT (FOR HACKATHON PROBE) =================
 @app.api_route("/", methods=["GET", "POST"])
-async def root_probe(
-    x_api_key: str = Header(None),
-    authorization: str = Header(None)
-):
-    validate_api_key(x_api_key, authorization)
+async def root_probe():
     return {
         "status": "alive",
         "service": "agentic-honeypot",
