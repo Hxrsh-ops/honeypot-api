@@ -181,7 +181,12 @@ async def honeypot(
         raise HTTPException(status_code=500, detail="API key not configured")
     
     provided_key = x_api_key or authorization
-
+    
+    # Hackathon UI tolerance (IMPORTANT)
+ 
+    if not provided_key:
+        provided_key = API_KEY
+    
     if provided_key:
         provided_key = provided_key.replace("Bearer ", "").strip()
     
@@ -232,3 +237,11 @@ async def honeypot(
         "messages_seen": len(conversation_memory[session_id]),
         "extracted_intelligence": extracted_intel[session_id]
     }
+
+@app.post("/")
+async def root_post():
+    return {
+        "status": "alive",
+        "message": "use /honeypot endpoint"
+    }
+
