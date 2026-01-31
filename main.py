@@ -144,7 +144,7 @@ def avoid_repetition(session_id, candidate):
     return candidate
 
 def choose_reply(session_id, msg):
-    if len(reply_history.get(session_id, [])) > 40:
+    if len(reply_history.get(session_id, set())) > 40:
         reply_history[session_id].clear()
 
     turns = len(conversation_memory[session_id])
@@ -164,35 +164,37 @@ def choose_reply(session_id, msg):
     reply = humanize(reply)
     return avoid_repetition(session_id, reply)
 
-# ================= ROUTES =================
-@app.get("/")
-def root():
-    return {"status": "running"}
+# ================= AUTH HELPER =================
+def validate_api_key(x_api_key: str, authorization: str):
+    provided = x_api_key or authorization
+    if not provided:
+        raise HTTPException(status_code=401, detail="Missing API Key")
 
+    provided = provided.replace("Bearer ", "").strip()
+    if provided != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+# ================= ROOT (FOR HACKATHON PROBE) =================
+@app.api_route("/", methods=["GET", "POST"])
+async def root_probe(
+    x_api_key: str = Header(None),
+    authorization: str = Header(None)
+):
+    validate_api_key(x_api_key, authorization)
+    return {
+        "status": "alive",
+        "service": "agentic-honeypot",
+        "message": "endpoint reachable"
+    }
+
+# ================= HONEYPOT =================
 @app.post("/honeypot")
 async def honeypot(
     request: Request,
     x_api_key: str = Header(None),
     authorization: str = Header(None)
 ):
-
-
-    if not API_KEY:
-        raise HTTPException(status_code=500, detail="API key not configured")
-    
-    provided_key = x_api_key or authorization
-    
-    # Hackathon UI tolerance (IMPORTANT)
- 
-    if not provided_key:
-        provided_key = API_KEY
-    
-    if provided_key:
-        provided_key = provided_key.replace("Bearer ", "").strip()
-    
-    if provided_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-    
+    validate_api_key(x_api_key, authorization)
 
     try:
         body = await request.json()
@@ -209,7 +211,6 @@ async def honeypot(
     )
 
     msg = str(msg)
-
     session_id = body.get("session_id") or str(uuid.uuid4())
 
     conversation_memory.setdefault(session_id, []).append(msg)
@@ -237,11 +238,3 @@ async def honeypot(
         "messages_seen": len(conversation_memory[session_id]),
         "extracted_intelligence": extracted_intel[session_id]
     }
-
-@app.post("/")
-async def root_post():
-    return {
-        "status": "alive",
-        "message": "use /honeypot endpoint"
-    }
-
