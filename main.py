@@ -170,12 +170,24 @@ def root():
     return {"status": "running"}
 
 @app.post("/honeypot")
-async def honeypot(request: Request, x_api_key: str = Header(None)):
+async def honeypot(
+    request: Request,
+    x_api_key: str = Header(None),
+    authorization: str = Header(None)
+):
+
+
     if not API_KEY:
         raise HTTPException(status_code=500, detail="API key not configured")
+    
+    provided_key = x_api_key or authorization
 
-    if x_api_key != API_KEY:
+    if provided_key:
+        provided_key = provided_key.replace("Bearer ", "").strip()
+    
+    if provided_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
+    
 
     try:
         body = await request.json()
