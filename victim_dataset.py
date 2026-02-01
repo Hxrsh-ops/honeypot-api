@@ -23,13 +23,24 @@ OTP_WARNINGS = [
     "I don't share any verification codes. I'll call the bank's official number instead."
 ]
 
+# OTP probes: varied ways a cautious human asks for verification instead of sharing codes
+OTP_PROBES = [
+    "Why do you need the OTP? Please share your designation and extension for verification.",
+    "I'm careful with codes—can you share a branch phone or official ticket ID so I can call?",
+    "Who am I speaking with exactly? Please provide your employee ID and branch so I can verify.",
+    "Can you share an official contact or ticket ID? I won't share OTP otherwise.",
+    "Why OTP though? Please give me a branch number or ticket/reference so I can confirm.",
+    "hmm, why OTP? pls provide your designation and a contact number so I can verify.",
+    "pls share your employee id and branch phone, I need to call them — I won’t share OTP without that."
+]
+
 # ---- Neutral / filler / real-human chatter ----
 FILLERS = [
-    "hmm", "uh", "okay", "wait", "one sec", "alright",
+    "hmm", "uh", "uhh", "eh", "ooh", "okay", "wait", "one sec", "gimme a sec", "hold up", "alright",
     "yeah", "ya", "huh", "hmm okay", "right", "fine",
     "ok then", "hmm right", "yeah okay", "alright then",
     "got it", "okay sure", "hmm noted", "alright fine",
-    "mm hmm", "bear with me", "let me see", "one moment"
+    "mm hmm", "bear with me", "let me see", "one moment", "brb", "lemme check"
 ]
 
 # ---- Small talk choices ----

@@ -12,6 +12,13 @@ from fastapi.responses import JSONResponse
 
 from agent_utils import safe_parse_body, detect_links, UPI_RE, PHONE_RE, NAME_RE, BANK_RE, sample_no_repeat, sample_no_repeat_varied, redact_sensitive
 from agent import Agent
+# optional LLM paraphrase helper (best-effort import)
+try:
+    from llm_adapter import generate_reply_with_llm, USE_LLM, LLM_USAGE_PROB
+except Exception:
+    generate_reply_with_llm = None
+    USE_LLM = "0"
+    LLM_USAGE_PROB = 0.0
 from victim_dataset import (
     FILLERS, SMALL_TALK, CONFUSION, INTRO_ACK, BANK_VERIFICATION, COOPERATIVE,
     PROBING, SOFT_DOUBT, RESISTANCE, NEAR_FALL, FATIGUE, EXIT, OTP_WARNINGS,
@@ -119,7 +126,20 @@ def choose_reply_from_dataset(strategy: str, session: dict) -> str:
     if random.random() < 0.18:
         pool = list(pool) + random.sample(FILLERS, min(3, len(FILLERS)))
 
-    reply = sample_no_repeat(pool, session.setdefault("recent_responses", set()))
+    # prefer varied sampling and let the sampler try paraphrase/LLM when possible
+    try:
+        # if LLM available, pass a rephrase hook that attempts a paraphrase using the LLM
+        def maybe_llm_rephrase(text):
+            try:
+                if generate_reply_with_llm is not None and str(USE_LLM) == "1":
+                    out = generate_reply_with_llm(session, text, "paraphrase")
+                    return out
+            except Exception:
+                pass
+            return None
+        reply = sample_no_repeat_varied(pool, session.setdefault("recent_responses", set()), session=session, rephrase_hook=maybe_llm_rephrase)
+    except Exception:
+        reply = sample_no_repeat(pool, session.setdefault("recent_responses", set()))
     # occasionally expand or personalize
     if session["profile"].get("name") and random.random() < 0.25 and strategy not in ("challenge", "exit"):
         reply = f"{session['profile']['name']}, {reply}"

@@ -68,3 +68,29 @@ def test_length_variation():
     assert sum(types.values()) == 30
     # expect at least one of each length in a reasonable random run
     assert types["short"] > 0 and types["medium"] > 0
+
+
+def test_otp_probe_variety():
+    s = {}
+    a = Agent(s)
+    out1 = a.respond("Please share your OTP now")
+    r1 = out1["reply"] if isinstance(out1, dict) else out1
+    # reset otp ask count to simulate a fresh probe while preserving recent_responses
+    s.setdefault("flags", {})["otp_ask_count"] = 0
+    out2 = a.respond("Please share OTP now")
+    r2 = out2["reply"] if isinstance(out2, dict) else out2
+    assert r1 != r2, "Probe replies should vary when the prior text is in recent responses"
+
+
+def test_detect_suspicious_empid_ifsc():
+    s = {}
+    a = Agent(s)
+    # simulate an incoming message that includes a long numeric employee id and malformed IFSC
+    msg = "My official ID is 1234567890123456 and my IFSC is ABCD0123456"
+    a.observe(msg)
+    mem = s.get("memory", [])
+    assert any(m.get("type") == "suspicious_emp_id" for m in mem)
+    # generate a reply, agent should escalate / question suspicious claims
+    rep = a.generate_reply("probe", msg)
+    r = rep if isinstance(rep, str) else rep
+    assert any(k in r.lower() for k in ["id", "ifsc", "email", "branch", "call"])

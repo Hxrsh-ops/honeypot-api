@@ -6,7 +6,9 @@ from victim_dataset import PERSONA_STYLE_TEMPLATES, BANKS, PROBING, OTP_WARNINGS
 NUM_RE = re.compile(r"\b(\d{3,})\b")
 BANK_NAME_RE = re.compile(r"\b(?:from|at)\s+([A-Za-z ]+?)(?:\s+bank\b|\bbranch\b|[.,;:]|$)", re.I)
 TICKET_KEYWORDS = ["ticket", "complaint", "ref", "reference", "ticket number", "complaint id", "txn", "transaction"]
-
+IFSC_RE = re.compile(r"\b([A-Za-z]{4}0[A-Za-z0-9]{6})\b", re.I)
+EMP_ID_RE = re.compile(r"employee id[:\s]*([A-Za-z0-9\-\_]+)", re.I)
+ID_GENERIC_RE = re.compile(r"\b(?:employee id|official id|id)\b[:\s]*(?:is\s*)?([A-Za-z0-9\-\_]{4,})\b", re.I)
 # add LLM import
 try:
     from llm_adapter import generate_reply_with_llm, USE_LLM, LLM_USAGE_PROB
@@ -72,6 +74,31 @@ class Agent:
                 if m:
                     self._record_claim("ticket", m.group(1), msg, now)
 
+        # detect IFSC codes and validate their format
+        ifc = IFSC_RE.search(msg)
+        if ifc:
+            code = ifc.group(1).upper()
+            # IFSC looks like valid format; record it
+            self._record_claim('ifsc', code, msg, now)
+            # simple validation (length and 0 in 5th pos already ensured by regex)
+            if not self._is_valid_ifsc(code):
+                self.s.setdefault('memory', []).append({'type': 'invalid_ifsc', 'value': code, 'when': now, 'msg': msg})
+
+        # detect employee id patterns and validate
+        emp = EMP_ID_RE.search(msg)
+        if emp:
+            eid = emp.group(1)
+            self._record_claim('employee_id', eid, msg, now)
+            if self._is_suspicious_emp_id(eid):
+                self.s.setdefault('memory', []).append({'type': 'suspicious_emp_id', 'value': eid, 'when': now, 'msg': msg})
+        else:
+            # generic id patterns like 'my id is 1234567890'
+            gid = ID_GENERIC_RE.search(msg)
+            if gid:
+                eid = gid.group(1)
+                self._record_claim('employee_id', eid, msg, now)
+                if self._is_suspicious_emp_id(eid):
+                    self.s.setdefault('memory', []).append({'type': 'suspicious_emp_id', 'value': eid, 'when': now, 'msg': msg})
         # if message indicates a state (busy/driving/sleeping) update persona_state
         if any(x in lower for x in ["i'm driving", "i'm driving actually", "driving"]):
             self.s["persona_state"] = "driving"
@@ -93,6 +120,17 @@ class Agent:
         claims.append({"kind": kind, "value": value, "when": ts, "msg": src})
         self.s["profile"][kind] = value
 
+    def _is_valid_ifsc(self, code: str) -> bool:
+        # IFSC must be exactly 11 chars: 4 letters + 0 + 6 alnum
+        return bool(re.fullmatch(r"[A-Za-z]{4}0[A-Za-z0-9]{6}", code))
+
+    def _is_suspicious_emp_id(self, eid: str) -> bool:
+        # suspicious if it's an unusually long numeric-only id, or contains a 16-digit number
+        if re.fullmatch(r"\d{10,}", eid):
+            return True
+        if re.search(r"\d{12,}", eid):
+            return True
+        return False
     def detect_intent(self, msg: str):
         t = (msg or "").lower()
         if any(k in t for k in ["transfer", "pay", "upi", "account", "send money", "collect", "link"]):
@@ -252,6 +290,28 @@ class Agent:
         else:
             pool = ["Okay, I’ll try that.", "Alright, do it then."]
 
+        # If suspicious claims exist (invalid IFSC, suspicious emp id, unknown bank), escalate to challenge/probe
+        mem = self.s.get("memory", [])
+        suspicious = any(m.get("type") in ("invalid_ifsc", "suspicious_emp_id", "unknown_bank") for m in mem)
+        if suspicious:
+            # prefer to question dubious claims explicitly
+            probes = [
+                "That employee ID looks odd — can you provide an official email or a branch number I can call?",
+                "The IFSC/ID doesn't look right. Please share an official mail or a verifiable ticket so I can confirm.",
+                "Please provide a formal email ID or an official branch number; I won't share codes without verifying.",
+            ]
+            # bias to pick from probes when suspicious
+            try:
+                reply = sample_no_repeat_varied(probes, recent, session=self.s, rephrase_hook=lambda t: self._paraphrase(t))
+            except Exception:
+                reply = random.choice(probes)
+            # ensure recorded
+            try:
+                recent.add(reply)
+            except Exception:
+                pass
+            return reply
+
         # pick a non-repeating reply, paraphrase if necessary to avoid duplicates
         reply = sample_no_repeat_varied(pool, recent, session=self.s, rephrase_hook=lambda txt: self._paraphrase(txt))
         # set last_question if reply asks for something specific
@@ -346,22 +406,41 @@ class Agent:
         if otp_pattern:
             flags = self.s.setdefault("flags", {})
             otp_count = flags.get("otp_ask_count", 0)
-            # on first OTP request, respond with a probe seeking verification info instead of immediate refusal
+            recent = self.s.setdefault("recent_responses", set())
+            # on first OTP request, respond with a varied probe seeking verification info instead of immediate refusal
             if otp_count == 0:
                 flags["otp_ask_count"] = 1
-                probe = random.choice([
-                    "Who am I speaking with exactly? Please provide your employee ID and branch so I can verify.",
-                    "I'm careful with codes—can you share a branch phone or official ticket ID so I can call?",
-                    "Why do you need the OTP? Please share your designation and extension for verification."
-                ])
+                # pick a probe from dataset and try to paraphrase if needed
+                try:
+                    from victim_dataset import OTP_PROBES
+                    probe = sample_no_repeat_varied(OTP_PROBES, recent, session=self.s, rephrase_hook=lambda t: self._paraphrase(t))
+                except Exception:
+                    probe = random.choice([
+                        "Who am I speaking with exactly? Please provide your employee ID and branch so I can verify.",
+                        "I'm careful with codes—can you share a branch phone or official ticket ID so I can call?",
+                        "Why do you need the OTP? Please share your designation and extension for verification."
+                    ])
+                # ensure probe recorded to avoid repeating the exact text
+                try:
+                    recent.add(probe)
+                except Exception:
+                    pass
                 strategy = "probe"
                 self.s.setdefault("strategy_history", []).append({"strategy": strategy, "intent": intent, "ts": time.time()})
                 return {"reply": probe, "strategy": strategy, "intent": intent, "profile": self.s["profile"], "memory": self.s.get("memory", []), "claims": self.s.get("claims", [])}
             else:
-                # subsequent OTP requests: explicit refusal with stronger language
-                reply = random.choice(OTP_WARNINGS)
+                # subsequent OTP requests: explicit refusal with stronger and varied language
+                try:
+                    from victim_dataset import OTP_WARNINGS
+                    reply = sample_no_repeat_varied(OTP_WARNINGS, recent, session=self.s, rephrase_hook=lambda t: self._paraphrase(t))
+                except Exception:
+                    reply = random.choice(OTP_WARNINGS)
                 strategy = "challenge"
                 self.s.setdefault("strategy_history", []).append({"strategy": strategy, "intent": intent, "ts": time.time()})
+                try:
+                    recent.add(reply)
+                except Exception:
+                    pass
                 return {"reply": reply, "strategy": strategy, "intent": intent, "profile": self.s["profile"], "memory": self.s.get("memory", []), "claims": self.s.get("claims", [])}
 
         reply = self.generate_reply(strategy, incoming)
