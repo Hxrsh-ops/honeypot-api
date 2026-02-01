@@ -220,3 +220,4 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
         "messages_seen": len(conversation_memory[session_id]),
         "extracted_intelligence": extracted_intel[session_id]
     }
+#completed
