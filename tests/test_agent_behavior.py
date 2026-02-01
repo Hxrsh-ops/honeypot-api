@@ -94,3 +94,19 @@ def test_detect_suspicious_empid_ifsc():
     rep = a.generate_reply("probe", msg)
     r = rep if isinstance(rep, str) else rep
     assert any(k in r.lower() for k in ["id", "ifsc", "email", "branch", "call"])
+
+
+def test_casual_then_escalate_on_repeats():
+    s = {}
+    a = Agent(s)
+    # first identical incoming => casual opener expected
+    r1 = a.generate_reply("probe", "Please share your employee id and branch phone")
+    r1s = r1 if isinstance(r1, str) else r1
+    assert any(x in r1s.lower() for x in ["hmm", "hey", "one sec", "ok", "oh", "hi", "lemme", "gimme", "hold on"]) or len(r1s.split()) < 6
+    # simulate repeated identical incoming messages
+    r2 = a.generate_reply("probe", "Please share your employee id and branch phone")
+    r3 = a.generate_reply("probe", "Please share your employee id and branch phone")
+    r2s = r2 if isinstance(r2, str) else r2
+    r3s = r3 if isinstance(r3, str) else r3
+    # after repeats, expect a stronger/probing/challenge-type reply
+    assert any(k in (r3s.lower()) for k in ["suspicious", "official", "ticket", "email", "branch", "call"])

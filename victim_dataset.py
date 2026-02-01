@@ -338,6 +338,17 @@ SLANGS = {
 }
 ABBREVS = ["FYI", "ASAP", "BTW", "IDK", "TBF"]
 
+# Casual openers / chill starters to use at conversation start
+CASUAL_OPENERS = [
+    "hmm, what is this about?",
+    "hey, what's up?",
+    "uhh, can we be quick?",
+    "oh, hi — what's this regarding?",
+    "hmm, I'm a bit busy but tell me briefly",
+    "one sec, can you explain in short?",
+    "ok, what's happening?"
+]
+
 for name in PERSONA_NAMES:
     for amt in AMOUNTS:
         for reason in COMMON_REASONS:

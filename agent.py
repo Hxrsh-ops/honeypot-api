@@ -239,6 +239,7 @@ class Agent:
         name = self.s["profile"].get("name")
         persona = self.s.get("persona", "confused")
         state = self.s.get("persona_state", "free")
+        escalation = False
 
         # If the last question expects a numeric answer, and incoming contains digits, confirm
         if self.s.get("last_question"):
@@ -257,12 +258,47 @@ class Agent:
                 "Can you resend the details (UPI/account/IFSC/ticket)?",
                 "Who am I speaking with exactly? Please share your employee ID and branch so I can verify."
             ]
-            # sometimes use very short filler probes to emulate human hesitation
-            short_fillers = ["one sec", "hmm", "ok", "hang on", "let me check"]
-            if random.random() < 0.25:
-                pool = pool + short_fillers
+            # prefer casual openers early on and increase filler probability at the start
+            try:
+                from victim_dataset import CASUAL_OPENERS, FILLERS
+            except Exception:
+                CASUAL_OPENERS = ["hmm", "one sec"]
+                FILLERS = ["hmm", "one sec"]
+
+            # track repeated incoming messages to decide escalation
+            last_in = self.s.setdefault("last_incoming", None)
+            if last_in and (last_in.strip().lower() == (incoming or "").strip().lower()):
+                self.s.setdefault("repeat_count", 0)
+                self.s["repeat_count"] += 1
+            else:
+                self.s["repeat_count"] = 0
+            self.s["last_incoming"] = (incoming or "")
+
+            # initial casual response with filler if this is the first probe
+            if self.s.get("repeat_count", 0) == 0 and random.random() < 0.7:
+                # prefer short filler variants (hmm/one sec/ok/hey) with high prob so first reply feels chill
+                SHORT_FILLERS = ["hmm", "one sec", "ok", "hey", "uhh", "lemme check", "gimme a sec"]
+                if random.random() < 0.65:
+                    opener = random.choice(SHORT_FILLERS)
+                else:
+                    opener = random.choice(CASUAL_OPENERS)
+                pool = [f"{opener} {p}" for p in pool]
+            # on repeated identical requests escalate: stronger challenge phrasing
+            elif self.s.get("repeat_count", 0) >= 2:
+                pool = [
+                    "That's suspicious — please provide a verifiable email or an official branch contact. I won't share OTP.",
+                    "You've repeated this several times without verification. Please give an official ticket ID and a branch number.",
+                    "I need an official email or a branch phone I can call — I won't provide any codes otherwise."
+                ]
+                escalation = True
+            else:
+                # sometimes add light fillers
+                if random.random() < 0.25:
+                    pool = pool + random.sample(FILLERS, min(3, len(FILLERS)))
+
             # avoid contradictions: prefer probes that don't declare a state
             pool = [p for p in pool if not self._detect_state_in_text(p)]
+
         elif strategy == "delay":
             # state-aware delay phrasing
             if state in ("busy", "at_work"):
@@ -314,6 +350,7 @@ class Agent:
 
         # pick a non-repeating reply, paraphrase if necessary to avoid duplicates
         reply = sample_no_repeat_varied(pool, recent, session=self.s, rephrase_hook=lambda txt: self._paraphrase(txt))
+
         # set last_question if reply asks for something specific
         if any(word in reply.lower() for word in ["ticket", "upi", "account", "ifsc", "account number"]):
             # map to short key for confirmation
@@ -338,7 +375,22 @@ class Agent:
 
         # length variation: try to produce short/medium/long replies to simulate humans
         length = random.choices(["short", "medium", "long"], weights=[0.55, 0.33, 0.12])[0]
-        if length == "medium":
+        if length == "short":
+            # if this reply declares state (e.g., 'at work', 'busy'), preserve it; otherwise make concise
+            state_tokens = ["at work", "i'm at work", "busy", "i'll check", "i will check"]
+            if not any(t in reply.lower() for t in state_tokens):
+                # ensure short replies are concise: keep the first clause or substitute a short filler variant
+                if len(reply.split()) > 8:
+                    short_variants = ["hmm", "one sec", "ok", "I’ll check", "lemme check", "hold on"]
+                    # pick a short variant that avoids exact repeats
+                    try:
+                        reply = sample_no_repeat(short_variants, recent)
+                    except Exception:
+                        if random.random() < 0.5:
+                            reply = random.choice(short_variants)
+                        else:
+                            reply = ' '.join(reply.split('.')[:1])[:120]
+        elif length == "medium":
             # append a short clarifying sentence or small-talk style phrase
             extra = random.choice([
                 "Also, do you have an official ticket ID?",
@@ -392,6 +444,54 @@ class Agent:
         except Exception:
             # fail safe: keep original reply
             pass
+
+        # escalation enforcement: if we escalated due to repeated incoming and reply lacks an escalation token, append a short challenge
+        try:
+            if escalation and not any(k in (reply or "").lower() for k in ["suspicious", "official", "ticket", "email", "branch", "call"]):
+                reply = f"{reply} Please provide an official email or branch phone so I can verify."
+        except Exception:
+            pass
+
+        # ensure delay replies keep state references (avoid being shortened to a filler)
+        try:
+            if strategy == "delay" and state in ("busy", "at_work", "driving", "sleeping"):
+                state_tokens = ["at work", "i'm at work", "i'm driving", "driving", "sleeping", "busy", "check my phone", "call the branch"]
+                if not any(t in (reply or "").lower() for t in state_tokens):
+                    # append contextual state info
+                    if state == "at_work" or state == "busy":
+                        reply = f"{reply} I'm at work and will check later."
+                    elif state == "driving":
+                        reply = f"{reply} I'm driving and will call when I stop."
+                    elif state == "sleeping":
+                        reply = f"{reply} It's late here; I'll check tomorrow."
+        except Exception:
+            pass
+
+        # Final uniqueness enforcement: ensure we don't return exact duplicates
+        try:
+            from agent_utils import _normalize_text
+            normalized_recent = set(_normalize_text(x) for x in recent)
+            attempts = 0
+            # if this reply conflicts with previously sent normalized replies, attempt paraphrase or small tweaks
+            while _normalize_text(reply) in normalized_recent and attempts < 6:
+                newr = self._paraphrase(reply)
+                if not newr or _normalize_text(newr) in normalized_recent:
+                    # try a programmatic tweak
+                    reply = reply + " " + random.choice(["pls", "(confirm?)", "— ok?"])
+                else:
+                    reply = newr
+                    break
+                attempts += 1
+            try:
+                recent.add(reply)
+            except Exception:
+                pass
+        except Exception:
+            try:
+                if reply not in recent:
+                    recent.add(reply)
+            except Exception:
+                pass
 
         return reply
 

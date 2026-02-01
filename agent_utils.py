@@ -38,14 +38,29 @@ async def safe_parse_body(request: Request) -> Dict[str, Any]:
 def detect_links(text: str):
     return URL_RE.findall(text)
 
+def _normalize_text(s: str) -> str:
+    return (s or "").strip().lower()
+
+
 def sample_no_repeat(pool, recent_set, max_attempts=20):
+    # track normalized values to detect repeats regardless of capitalization/punctuation
+    normalized = set(_normalize_text(x) for x in recent_set)
     for _ in range(max_attempts):
         c = random.choice(pool)
-        if c not in recent_set:
+        if _normalize_text(c) not in normalized:
             recent_set.add(c)
+            normalized.add(_normalize_text(c))
             if len(recent_set) > 200:
                 # keep small; using pop on set is fine
                 recent_set.pop()
+            return c
+    # as fallback, return a random choice but prefer one with a different normalized form if possible
+    for c in pool:
+        if _normalize_text(c) not in normalized:
+            try:
+                recent_set.add(c)
+            except Exception:
+                pass
             return c
     return random.choice(pool)
 
@@ -57,10 +72,15 @@ def sample_no_repeat_varied(pool, recent_set, session=None, rephrase_hook=None, 
     or programmatically produce a rephrased variant that is not in recent_set.
     """
     # first, try to pick an unused item
+    normalized = set(_normalize_text(x) for x in recent_set)
     for _ in range(max_attempts):
         c = random.choice(pool)
-        if c not in recent_set:
-            recent_set.add(c)
+        if _normalize_text(c) not in normalized:
+            try:
+                recent_set.add(c)
+            except Exception:
+                pass
+            normalized.add(_normalize_text(c))
             if len(recent_set) > 400:
                 recent_set.pop()
             return c
@@ -72,8 +92,11 @@ def sample_no_repeat_varied(pool, recent_set, session=None, rephrase_hook=None, 
     if rephrase_hook:
         try:
             new_text = rephrase_hook(base)
-            if new_text and new_text not in recent_set and new_text != base:
-                recent_set.add(new_text)
+            if new_text and _normalize_text(new_text) not in normalized and new_text != base:
+                try:
+                    recent_set.add(new_text)
+                except Exception:
+                    pass
                 if len(recent_set) > 400:
                     recent_set.pop()
                 return new_text
