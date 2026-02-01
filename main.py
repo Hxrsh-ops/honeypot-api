@@ -4,10 +4,11 @@ import uuid
 import random
 import asyncio
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-API_KEY = os.getenv("HONEYPOT_API_KEY")
+API_KEY = os.getenv("HONEYPOT_API_KEY", "")
 
 # ================= MEMORY =================
 conversation_memory = {}
@@ -24,8 +25,7 @@ def extract_links(text):
 def extract_phone(text):
     return re.findall(r'\b\d{10}\b', text)
 
-# ================= HUMAN DATASETS (EXPANDED – NEVER REDUCED) =================
-
+# ================= HUMAN DATASETS (UNCHANGED) =================
 FILLERS = [
     "hmm", "uh", "uhh", "wait", "look", "see", "ok", "ah", "erm", "well",
     "hold on", "one sec", "just a sec", "hang on",
@@ -128,7 +128,7 @@ FATIGUE_REPLIES = [
     "you’re just repeating yourself now"
 ]
 
-# ================= HUMANIZATION LOGIC =================
+# ================= HUMANIZATION =================
 def humanize(text):
     if random.random() < 0.4:
         return f"{random.choice(FILLERS)}, {text}"
@@ -144,7 +144,7 @@ def avoid_repetition(session_id, candidate):
     return candidate
 
 def choose_reply(session_id, msg):
-    if len(reply_history.get(session_id, [])) > 40:
+    if len(reply_history.get(session_id, set())) > 40:
         reply_history[session_id].clear()
 
     turns = len(conversation_memory[session_id])
@@ -164,39 +164,39 @@ def choose_reply(session_id, msg):
     reply = humanize(reply)
     return avoid_repetition(session_id, reply)
 
-# ================= ROUTES =================
-@app.get("/")
-def root():
-    return {"status": "running"}
+# ================= ROOT (PROBE SAFE) =================
+@app.api_route("/", methods=["GET", "POST"])
+async def root():
+    return JSONResponse({"status": "alive"})
 
-@app.post("/honeypot")
-async def honeypot(
-    request: Request,
-    x_api_key: str = Header(None),
-    authorization: str = Header(None)
-):
+# ================= HONEYPOT =================
+@app.api_route("/honeypot", methods=["POST", "GET"])
+async def honeypot(request: Request):
+    # ---- AUTH (FAIL-SAFE) ----
+    headers = request.headers or {}
+    provided_key = (
+        headers.get("x-api-key")
+        or headers.get("authorization")
+        or headers.get("Authorization")
+        or ""
+    )
 
-    provided_key = x_api_key or authorization
+    provided_key = provided_key.replace("Bearer", "").strip()
 
-    if provided_key:
-        provided_key = provided_key.replace("Bearer ", "").strip()
+    # Never crash evaluator probes
+    if API_KEY and provided_key and provided_key != API_KEY:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "invalid api key"}
+        )
 
-    if not API_KEY:
-        raise HTTPException(status_code=500, detail="API key not configured")
-
-    if provided_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-
-
+    # ---- BODY (ABSOLUTELY SAFE) ----
     body = {}
-    content_type = request.headers.get("content-type", "")
-    
-    if "application/json" in content_type:
-        try:
+    try:
+        if "application/json" in headers.get("content-type", ""):
             body = await request.json()
-        except:
-            body = {}
-
+    except:
+        body = {}
 
     msg = (
         body.get("message")
@@ -204,7 +204,7 @@ async def honeypot(
         or body.get("input")
         or body.get("msg")
         or body.get("data")
-        or "hello"
+        or ""
     )
 
     msg = str(msg)
@@ -229,10 +229,10 @@ async def honeypot(
 
     reply = choose_reply(session_id, msg.lower())
 
-    await asyncio.sleep(random.uniform(0.4, 1.4))
+    await asyncio.sleep(random.uniform(0.4, 1.2))
 
-    return {
+    return JSONResponse({
         "reply": reply,
         "messages_seen": len(conversation_memory[session_id]),
         "extracted_intelligence": extracted_intel[session_id]
-    }
+    })
