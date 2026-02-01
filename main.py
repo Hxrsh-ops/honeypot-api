@@ -3,7 +3,7 @@ import re
 import uuid
 import random
 import asyncio
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 
 app = FastAPI()
 
@@ -144,7 +144,7 @@ def avoid_repetition(session_id, candidate):
     return candidate
 
 def choose_reply(session_id, msg):
-    if len(reply_history.get(session_id, set())) > 40:
+    if len(reply_history.get(session_id, [])) > 40:
         reply_history[session_id].clear()
 
     turns = len(conversation_memory[session_id])
@@ -164,26 +164,18 @@ def choose_reply(session_id, msg):
     reply = humanize(reply)
     return avoid_repetition(session_id, reply)
 
-# ================= ROOT (NO AUTH, NEVER FAILS) =================
-@app.api_route("/", methods=["GET", "POST", "OPTIONS"])
-async def root_probe():
-    return {
-        "status": "alive",
-        "service": "agentic-honeypot"
-    }
+# ================= ROUTES =================
+@app.get("/")
+def root():
+    return {"status": "running"}
 
-# ================= HONEYPOT =================
 @app.post("/honeypot")
-async def honeypot(
-    request: Request,
-    x_api_key: str = Header(None),
-    authorization: str = Header(None)
-):
-    # SOFT auth (NEVER throws error)
-    provided_key = x_api_key or authorization
-    if provided_key:
-        provided_key = provided_key.replace("Bearer ", "").strip()
-    authorized = (provided_key == API_KEY)
+async def honeypot(request: Request, x_api_key: str = Header(None)):
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="API key not configured")
+
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
 
     try:
         body = await request.json()
@@ -200,6 +192,7 @@ async def honeypot(
     )
 
     msg = str(msg)
+
     session_id = body.get("session_id") or str(uuid.uuid4())
 
     conversation_memory.setdefault(session_id, []).append(msg)
@@ -225,6 +218,5 @@ async def honeypot(
     return {
         "reply": reply,
         "messages_seen": len(conversation_memory[session_id]),
-        "extracted_intelligence": extracted_intel[session_id],
-        "authorized": authorized
+        "extracted_intelligence": extracted_intel[session_id]
     }
