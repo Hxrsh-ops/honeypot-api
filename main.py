@@ -10,7 +10,7 @@ from typing import Dict, Any, List
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from agent_utils import safe_parse_body, detect_links, UPI_RE, PHONE_RE, NAME_RE, BANK_RE, sample_no_repeat, redact_sensitive
+from agent_utils import safe_parse_body, detect_links, UPI_RE, PHONE_RE, NAME_RE, BANK_RE, sample_no_repeat, sample_no_repeat_varied, redact_sensitive
 from agent import Agent
 from victim_dataset import (
     FILLERS, SMALL_TALK, CONFUSION, INTRO_ACK, BANK_VERIFICATION, COOPERATIVE,
@@ -205,7 +205,7 @@ async def honeypot(request: Request):
                 "Thanks for the info. I'll verify with customer care and call back.",
                 "I don't share OTPs or passwords. I'll contact my bank directly."
             ]
-            reply = sample_no_repeat(reply_pool + INTRO_ACK, session.setdefault("recent_responses", set()))
+            reply = sample_no_repeat_varied(reply_pool + INTRO_ACK, session.setdefault("recent_responses", set()), session=session, rephrase_hook=None)
             strategy_tag = "legitimate_verification"
             now = time.time()
             session.setdefault("turns", []).append({"text": reply, "direction": "out", "ts": now})

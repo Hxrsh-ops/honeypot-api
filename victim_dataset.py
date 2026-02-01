@@ -316,6 +316,17 @@ AMOUNTS = ["₹500","₹1,000","₹2,500","₹5,000","₹10,000"]
 COMMON_REASONS = ["refund","verification fee","tax","processing fee","account lock"]
 LONG_ADDITIONS = []
 
+# small slang and abbreviation lists to emulate casual chat
+SLANGS = {
+    "please": ["pls", "plz"],
+    "okay": ["ok", "k"],
+    "I will": ["I'll"],
+    "I am": ["I'm"],
+    "sorry": ["sry"],
+    "thanks": ["thx"],
+}
+ABBREVS = ["FYI", "ASAP", "BTW", "IDK", "TBF"]
+
 for name in PERSONA_NAMES:
     for amt in AMOUNTS:
         for reason in COMMON_REASONS:

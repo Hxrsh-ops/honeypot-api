@@ -1,6 +1,6 @@
 import re, time, random, os
 from typing import Dict, Any, Optional
-from agent_utils import detect_links, UPI_RE, PHONE_RE, BANK_RE, NAME_RE, sample_no_repeat
+from agent_utils import detect_links, UPI_RE, PHONE_RE, BANK_RE, NAME_RE, sample_no_repeat, sample_no_repeat_varied
 from victim_dataset import PERSONA_STYLE_TEMPLATES, BANKS, PROBING, OTP_WARNINGS
 
 NUM_RE = re.compile(r"\b(\d{3,})\b")
@@ -133,6 +133,69 @@ class Agent:
             candidates = pool or ["Okay"]
         return sample_no_repeat(candidates, self.s.setdefault("recent_responses", set()))
 
+    def _detect_state_in_text(self, text: str) -> Optional[str]:
+        t = (text or "").lower()
+        if any(x in t for x in ["i'm driving", "i m driving", "driving"]):
+            return "driving"
+        if any(x in t for x in ["i'm at work", "i m at work", "at work"]):
+            return "at_work"
+        if any(x in t for x in ["i was about to sleep", "going to sleep", "sleep"]):
+            return "sleeping"
+        if any(x in t for x in ["i just got free", "i'm free now", "i am free", "just got free"]):
+            return "free"
+        return None
+
+    def _apply_state_in_reply(self, reply: str):
+        # If the reply contains a state declaration, persist it to prevent contradictions
+        st = self._detect_state_in_text(reply)
+        if st:
+            # only update if different and record in memory
+            if self.s.get("persona_state") != st:
+                self.s["persona_state"] = st
+                self.s.setdefault("memory", []).append({"type": "persona_state_set", "state": st, "when": time.time(), "msg": reply})
+
+    def _llm_paraphrase(self, text: str) -> Optional[str]:
+        # Use LLM to paraphrase if available
+        try:
+            if generate_reply_with_llm is not None and str(USE_LLM) == "1":
+                out = generate_reply_with_llm(self.s, text, "paraphrase", timeout=3.0)
+                return out
+        except Exception:
+            pass
+        return None
+
+    def _programmatic_paraphrase(self, text: str) -> str:
+        # deterministic-ish paraphrase that introduces contractions/slang and short fillers
+        s = text
+        repls = {
+            r"\bdo not\b": "don't",
+            r"\bdoes not\b": "doesn't",
+            r"\bi will\b": "I'll",
+            r"\bi am\b": "I'm",
+            r"\bplease\b": "pls",
+            r"\bokay\b": "ok",
+            r"one sec": "one sec..",
+            r"I will not": "I won't",
+            r"I never share": "I never share"
+        }
+        for a, b in repls.items():
+            s = re.sub(a, b, s, flags=re.I)
+        # maybe add slang abbreviation
+        if random.random() < 0.25:
+            s = s + " " + random.choice(["FYI", "ASAP", "pls reply"]) 
+        # possibly split into two shorter sentences
+        if len(s) > 60 and random.random() < 0.4:
+            parts = s.split(',')
+            s = '. '.join(p.strip().capitalize() for p in parts[:2])
+        return s
+
+    def _paraphrase(self, text: str) -> str:
+        # Prefer LLM paraphrase, fall back to programmatic variants
+        p = self._llm_paraphrase(text)
+        if p:
+            return p
+        return self._programmatic_paraphrase(text)
+
     def generate_reply(self, strategy: str, incoming: str):
         recent = self.s.setdefault("recent_responses", set())
         name = self.s["profile"].get("name")
@@ -153,8 +216,15 @@ class Agent:
                 "Can you send the account number and IFSC or UPI ID clearly?",
                 "Where exactly should I transfer? Please share full steps.",
                 "Is that a UPI ID or bank transfer? I need exact details.",
-                "Can you resend the details (UPI/account/IFSC/ticket)?"
+                "Can you resend the details (UPI/account/IFSC/ticket)?",
+                "Who am I speaking with exactly? Please share your employee ID and branch so I can verify."
             ]
+            # sometimes use very short filler probes to emulate human hesitation
+            short_fillers = ["one sec", "hmm", "ok", "hang on", "let me check"]
+            if random.random() < 0.25:
+                pool = pool + short_fillers
+            # avoid contradictions: prefer probes that don't declare a state
+            pool = [p for p in pool if not self._detect_state_in_text(p)]
         elif strategy == "delay":
             # state-aware delay phrasing
             if state in ("busy", "at_work"):
@@ -182,7 +252,8 @@ class Agent:
         else:
             pool = ["Okay, I’ll try that.", "Alright, do it then."]
 
-        reply = sample_no_repeat(pool, recent)
+        # pick a non-repeating reply, paraphrase if necessary to avoid duplicates
+        reply = sample_no_repeat_varied(pool, recent, session=self.s, rephrase_hook=lambda txt: self._paraphrase(txt))
         # set last_question if reply asks for something specific
         if any(word in reply.lower() for word in ["ticket", "upi", "account", "ifsc", "account number"]):
             # map to short key for confirmation
@@ -193,11 +264,56 @@ class Agent:
             elif "ifsc" in reply.lower() or "account" in reply.lower():
                 self.s["last_question"] = "account"
 
-        # personalization and variable length
+        # apply any state declarations found in this reply so future replies remain consistent
+        try:
+            self._apply_state_in_reply(reply)
+        except Exception:
+            pass
+
+        # personalization
         if name and random.random() < 0.28 and strategy != "challenge":
             reply = f"{name}, {reply}"
         if random.random() < 0.22:
             reply = reply + " " + random.choice(["Please be precise.", "I don’t want issues.", "Explain step by step."])
+
+        # length variation: try to produce short/medium/long replies to simulate humans
+        length = random.choices(["short", "medium", "long"], weights=[0.55, 0.33, 0.12])[0]
+        if length == "medium":
+            # append a short clarifying sentence or small-talk style phrase
+            extra = random.choice([
+                "Also, do you have an official ticket ID?",
+                "Can you give the exact UPI ID again?",
+                "I want to verify this on my app before proceeding."
+            ])
+            reply = f"{reply} {extra}"
+        elif length == "long":
+            extras = [
+                "I need a bit more info: which branch and what's the ticket/reference?",
+                "I'll check my bank app and call the branch if necessary; can you share a contact or ticket ID so I can verify?",
+                "Ok, please send the full account number and IFSC, and also an employee ID so I can confirm with the bank." 
+            ]
+            reply = f"{reply} {random.choice(extras)}"
+
+        # optionally introduce slang/abbrev to look more human
+        try:
+            from victim_dataset import SLANGS, ABBREVS
+            if random.random() < 0.18:
+                # simple substitution of a random slang mapping
+                k = random.choice(list(SLANGS.keys()))
+                if k.lower() in reply.lower():
+                    sub = random.choice(SLANGS[k])
+                    reply = re.sub(r"\b" + re.escape(k) + r"\b", sub, reply, flags=re.I)
+            if random.random() < 0.08:
+                reply = reply + " " + random.choice(ABBREVS)
+        except Exception:
+            pass
+
+        # ensure final reply is unique in recent responses; if we changed it, add to recent set
+        try:
+            if reply not in recent:
+                recent.add(reply)
+        except Exception:
+            pass
 
         # Optionally refine via LLM (probabilistic). Synchronous call is okay
         try:
@@ -225,12 +341,28 @@ class Agent:
         intent = self.detect_intent(incoming)
         strategy = self.choose_strategy(intent)
 
-        # special-case: if incoming contains an OTP/pin request, refuse immediately
-        if re.search(r"\b(otp|one time password|pin|password)\b", (incoming or "").lower()):
-            reply = random.choice(OTP_WARNINGS)
-            strategy = "challenge"
-            self.s.setdefault("strategy_history", []).append({"strategy": strategy, "intent": intent, "ts": time.time()})
-            return {"reply": reply, "strategy": strategy, "intent": intent, "profile": self.s["profile"], "memory": self.s.get("memory", []), "claims": self.s.get("claims", [])}
+        # staged handling: if incoming contains an OTP/PIN request, try to probe for verification first
+        otp_pattern = re.search(r"\b(otp|one time password|pin|password)\b", (incoming or "").lower())
+        if otp_pattern:
+            flags = self.s.setdefault("flags", {})
+            otp_count = flags.get("otp_ask_count", 0)
+            # on first OTP request, respond with a probe seeking verification info instead of immediate refusal
+            if otp_count == 0:
+                flags["otp_ask_count"] = 1
+                probe = random.choice([
+                    "Who am I speaking with exactly? Please provide your employee ID and branch so I can verify.",
+                    "I'm careful with codes—can you share a branch phone or official ticket ID so I can call?",
+                    "Why do you need the OTP? Please share your designation and extension for verification."
+                ])
+                strategy = "probe"
+                self.s.setdefault("strategy_history", []).append({"strategy": strategy, "intent": intent, "ts": time.time()})
+                return {"reply": probe, "strategy": strategy, "intent": intent, "profile": self.s["profile"], "memory": self.s.get("memory", []), "claims": self.s.get("claims", [])}
+            else:
+                # subsequent OTP requests: explicit refusal with stronger language
+                reply = random.choice(OTP_WARNINGS)
+                strategy = "challenge"
+                self.s.setdefault("strategy_history", []).append({"strategy": strategy, "intent": intent, "ts": time.time()})
+                return {"reply": reply, "strategy": strategy, "intent": intent, "profile": self.s["profile"], "memory": self.s.get("memory", []), "claims": self.s.get("claims", [])}
 
         reply = self.generate_reply(strategy, incoming)
         self.s.setdefault("strategy_history", []).append({"strategy": strategy, "intent": intent, "ts": time.time()})

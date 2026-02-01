@@ -49,6 +49,78 @@ def sample_no_repeat(pool, recent_set, max_attempts=20):
             return c
     return random.choice(pool)
 
+
+def sample_no_repeat_varied(pool, recent_set, session=None, rephrase_hook=None, max_attempts=40):
+    """
+    Choose an element from pool avoiding exact repeats (based on recent_set).
+    If all items are already used, attempt to generate a paraphrase (via rephrase_hook)
+    or programmatically produce a rephrased variant that is not in recent_set.
+    """
+    # first, try to pick an unused item
+    for _ in range(max_attempts):
+        c = random.choice(pool)
+        if c not in recent_set:
+            recent_set.add(c)
+            if len(recent_set) > 400:
+                recent_set.pop()
+            return c
+
+    # all items may have been used; try to paraphrase a base item
+    base = random.choice(pool)
+
+    # attempt LLM or provided rephrase_hook first
+    if rephrase_hook:
+        try:
+            new_text = rephrase_hook(base)
+            if new_text and new_text not in recent_set and new_text != base:
+                recent_set.add(new_text)
+                if len(recent_set) > 400:
+                    recent_set.pop()
+                return new_text
+        except Exception:
+            pass
+
+    # fallback programmatic paraphrase: contractions, add filler, or split into two sentences
+    def programmatic_paraphrase(s):
+        s2 = s
+        # simple contractions / slang replacements
+        replacements = {
+            "do not": "don't",
+            "does not": "doesn't",
+            "i will": "i'll",
+            "i am": "i'm",
+            "please": "pls",
+            "okay": "ok",
+            "one sec": "one sec..",
+            "I will not": "I won't",
+            "I never share": "I never share"
+        }
+        for a, b in replacements.items():
+            s2 = re.sub(r"\b" + re.escape(a) + r"\b", b, s2, flags=re.I)
+        # add a short filler or an extra clause
+        extras = ["Thanks.", "Pls be precise.", "Can you confirm?", "I need more details."]
+        if random.random() < 0.5:
+            s2 = s2 + " " + random.choice(extras)
+        # make sure different characters / punctuation
+        if s2 == s:
+            s2 = s + "..."
+        return s2.strip()
+
+    for _ in range(10):
+        cand = programmatic_paraphrase(base)
+        if cand not in recent_set and cand != base:
+            recent_set.add(cand)
+            if len(recent_set) > 400:
+                recent_set.pop()
+            return cand
+
+    # as a last resort, append a random filler to the base
+    fallback = base + " " + random.choice(["(confirm?)", "(pls)", "- ok?", "...pls reply"]) 
+    recent_set.add(fallback)
+    if len(recent_set) > 400:
+        recent_set.pop()
+    return fallback
+
 # new: simple redaction util (useful for logs / outputs)
 def redact_sensitive(text: str) -> str:
     """
