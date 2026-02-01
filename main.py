@@ -4,12 +4,13 @@ import uuid
 import random
 import asyncio
 import time
+import logging
 from typing import Dict, Any, List
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from agent_utils import safe_parse_body, detect_links, UPI_RE, PHONE_RE, NAME_RE, BANK_RE, sample_no_repeat
+from agent_utils import safe_parse_body, detect_links, UPI_RE, PHONE_RE, NAME_RE, BANK_RE, sample_no_repeat, redact_sensitive
 from agent import Agent
 from victim_dataset import (
     FILLERS, SMALL_TALK, CONFUSION, INTRO_ACK, BANK_VERIFICATION, COOPERATIVE,
@@ -22,6 +23,10 @@ app = FastAPI()
 # ================= CONFIG =================
 API_KEY = os.getenv("HONEYPOT_API_KEY", "")
 MAX_TURNS = int(os.getenv("MAX_TURNS", 40))
+
+# simple logging
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("honeypot")
 
 # ================= MEMORY =================
 sessions: Dict[str, Any] = {}
@@ -175,56 +180,44 @@ async def honeypot(request: Request):
         session_id = body.get("session_id") or str(uuid.uuid4())
         session = get_session(session_id)
 
-        # instantiate a single agent and record observation once
-        agent = Agent(session)
-        agent.observe(msg, raw=body)
-
         # memory cleanup
         if len(session["turns"]) > MAX_TURNS:
             sessions.pop(session_id, None)
             return JSONResponse({"reply": "I’ll check this directly with the bank.", "session_id": session_id})
 
-        # classify intent & strategy
-        intent = agent.detect_intent(msg)
-        strategy = agent.choose_strategy(intent)
+        agent = Agent(session)  # create agent; do not call observe() twice
 
-        # detect legitimacy vs scam heuristics
+        # detect legitimacy vs scam heuristics first
         legit = detect_legitimate(msg, sender)
         is_scam = not legit["is_legit"]
 
-        # If looks legitimate: treat carefully (no deception), respond like normal customer
         if not is_scam:
-            # choose cautious verification style
+            # legitimate path: observe synchronously and reply using dataset
+            agent.observe(msg, raw=body)
             reply_pool = [
                 "Okay, I'm checking through the app and will call the bank branch.",
                 "Thanks for the info. I'll verify with customer care and call back.",
                 "I don't share OTPs or passwords. I'll contact my bank directly."
             ]
-            # include dataset polite replies
             reply = sample_no_repeat(reply_pool + INTRO_ACK, session.setdefault("recent_responses", set()))
             strategy_tag = "legitimate_verification"
+            now = time.time()
+            session.setdefault("turns", []).append({"text": reply, "direction": "out", "ts": now})
+            session.setdefault("recent_responses", set()).add(reply)
+            session.setdefault("strategy_history", []).append({"strategy": strategy_tag, "intent": "legitimate", "ts": now})
         else:
-            # scam path: choose reply based on strategy + agent state
-            # prefer agent.generate_reply for coherence with persona/state
-            # safety enforcement: never reveal OTP, never perform transactions
-            if re.search(r"\b(otp|one time password|pin|password)\b", msg.lower()):
-                reply = random.choice(OTP_WARNINGS)
-                strategy_tag = "challenge"
-            else:
-                # let agent generate a reply (uses recent responses internally)
-                reply = agent.generate_reply(strategy, msg)
-                strategy_tag = strategy
-
-        # record outgoing reply in session (keeps conversation state)
-        now = time.time()
-        session.setdefault("turns", []).append({"text": reply, "direction": "out", "ts": now})
-        session.setdefault("recent_responses", set()).add(reply)
-        session.setdefault("strategy_history", []).append({"strategy": strategy_tag, "intent": intent, "ts": now})
+            # scam path: run agent.respond in a thread (may call LLM)
+            out = await asyncio.to_thread(agent.respond, msg, raw=body)
+            reply = out.get("reply", sample_no_repeat(PROBING, session.setdefault("recent_responses", set())))
+            strategy_tag = out.get("strategy", "probe")
+            now = time.time()
+            session.setdefault("turns", []).append({"text": reply, "direction": "out", "ts": now})
+            session.setdefault("recent_responses", set()).add(reply)
 
         # short random delay to appear human
         await asyncio.sleep(random.uniform(0.3, 1.4))
 
-        # return structured output, useful to hackathon checker
+        # structured output
         return JSONResponse({
             "reply": reply,
             "session_id": session_id,
@@ -232,14 +225,12 @@ async def honeypot(request: Request):
             "legit_score": legit["score"],
             "legit_reason": legit["reason"],
             "strategy": strategy_tag,
-            "intent": intent,
             "extracted_profile": session["profile"],
-            "memory": session.get("memory", [])[-8:],  # recent memory
+            "memory": session.get("memory", [])[-8:],
             "claims": session.get("claims", [])[-12:]
         })
     except Exception as e:
-        # never crash the endpoint; return safe fallback
-        print("ERROR in /honeypot:", str(e))
+        logger.exception("ERROR in /honeypot")
         return JSONResponse({"reply": "Sorry, I’m having trouble. I’ll check with the bank.", "session_id": str(uuid.uuid4())})
 
 # simple session inspection endpoint (useful while integrating)
@@ -258,3 +249,43 @@ async def inspect_session(session_id: str, request: Request):
     # convert sets / non-serializables to JSON-safe structures
     sanitized = _sanitize_for_json(sanitized)
     return JSONResponse({"session_id": session_id, "session": sanitized})
+
+# Add a summary endpoint that returns prioritized intelligence
+@app.get("/sessions/{session_id}/summary")
+async def session_summary(session_id: str, request: Request):
+	if API_KEY:
+		provided = request.headers.get("x-api-key", "")
+		if provided != API_KEY:
+			return JSONResponse({"error": "unauthorized"}, status_code=403)
+	sess = sessions.get(session_id)
+	if not sess:
+		return JSONResponse({"error": "not found"}, status_code=404)
+	# prioritize high-value fields and recent claims
+	profile = sess.get("profile", {})
+	claims = sess.get("claims", [])[-20:]
+	memory = sess.get("memory", [])[-20:]
+	links = [l for l in profile.get("links", [])] + [c["value"] for c in claims if c["kind"] == "link"]
+	summary = {
+		"session_id": session_id,
+		"extract": {
+			"name": profile.get("name"),
+			"bank": profile.get("bank"),
+			"phone": redact_sensitive(profile.get("phone") or ""),
+			"upi": "(redacted)" if profile.get("upi") else None,
+			"links": links,
+			"contradictions": profile.get("contradictions", 0)
+		},
+		"recent_claims": claims,
+		"recent_memory": memory,
+	}
+	# sanitize before returning
+	return JSONResponse({"summary": _sanitize_for_json(summary)})
+
+# support running server via: python main.py (useful for local testing with chat client)
+if __name__ == "__main__":
+	import uvicorn
+	host = os.getenv("HOST", "0.0.0.0")
+	port = int(os.getenv("PORT", 8000))
+	# log startup for clarity
+	logger.info("Starting honeypot server on %s:%s", host, port)
+	uvicorn.run("main:app", host=host, port=port, log_level="info")

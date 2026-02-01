@@ -1,4 +1,4 @@
-import re, time, random
+import re, time, random, os
 from typing import Dict, Any, Optional
 from agent_utils import detect_links, UPI_RE, PHONE_RE, BANK_RE, NAME_RE, sample_no_repeat
 from victim_dataset import PERSONA_STYLE_TEMPLATES, BANKS, PROBING, OTP_WARNINGS
@@ -6,6 +6,14 @@ from victim_dataset import PERSONA_STYLE_TEMPLATES, BANKS, PROBING, OTP_WARNINGS
 NUM_RE = re.compile(r"\b(\d{3,})\b")
 BANK_NAME_RE = re.compile(r"\b(?:from|at)\s+([A-Za-z ]+?)(?:\s+bank\b|\bbranch\b|[.,;:]|$)", re.I)
 TICKET_KEYWORDS = ["ticket", "complaint", "ref", "reference", "ticket number", "complaint id", "txn", "transaction"]
+
+# add LLM import
+try:
+    from llm_adapter import generate_reply_with_llm, USE_LLM, LLM_USAGE_PROB
+except Exception:
+    generate_reply_with_llm = None
+    USE_LLM = "0"
+    LLM_USAGE_PROB = 0.0
 
 class Agent:
     def __init__(self, session: Dict[str, Any]):
@@ -190,6 +198,25 @@ class Agent:
             reply = f"{name}, {reply}"
         if random.random() < 0.22:
             reply = reply + " " + random.choice(["Please be precise.", "I don’t want issues.", "Explain step by step."])
+
+        # Optionally refine via LLM (probabilistic). Synchronous call is okay
+        try:
+            use_llm = (str(USE_LLM) == "1") and (generate_reply_with_llm is not None) and (random.random() < float(os.getenv("LLM_USAGE_PROB", LLM_USAGE_PROB or 0.6)))
+            if use_llm:
+                llm_out = generate_reply_with_llm(self.s, incoming, strategy)
+                if llm_out:
+                    # Prefer LLM output but fall back to rule reply on odd results
+                    # Keep occasional filler/hesitation from original reply to appear human
+                    if random.random() < 0.6:
+                        reply = llm_out
+                    else:
+                        reply = f"{reply} {llm_out}"
+                    # record LLM usage in memory (already done in adapter, but keep a short marker)
+                    self.s.setdefault("memory", []).append({"type": "llm_refined", "when": time.time(), "strategy": strategy})
+        except Exception:
+            # fail safe: keep original reply
+            pass
+
         return reply
 
     def respond(self, incoming: str, raw: Optional[dict] = None):

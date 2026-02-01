@@ -3,10 +3,12 @@ from typing import Any, Dict, Optional
 from fastapi import Request
 
 URL_RE = re.compile(r"https?://[^\s]+", re.I)
-UPI_RE = re.compile(r"\b[\w\.-]+@(?:ybl|okaxis|oksbi|okhdfc|upi)\b", re.I)
+# more generic UPI pattern (captures usual id@bank style)
+UPI_RE = re.compile(r"\b[\w\.-]+@[\w-]+\b", re.I)
 PHONE_RE = re.compile(r"(?:\+91[-\s]?)?[6-9]\d{9}")
-BANK_RE = re.compile(r"(sbi|hdfc|icici|axis|canara|pnb|bob)", re.I)
-NAME_RE = re.compile(r"(?:i am|this is|my name is)\s+([A-Za-z]+)", re.I)
+BANK_RE = re.compile(r"(sbi|hdfc|icici|axis|canara|pnb|bob|yesbank|kotak)", re.I)
+# capture multi-word names after common phrases
+NAME_RE = re.compile(r"(?:\b(?:i am|this is|my name is)\b)\s+([A-Za-z][A-Za-z\s]{0,40})", re.I)
 
 async def safe_parse_body(request: Request) -> Dict[str, Any]:
     # Robust body parsing: JSON if possible, otherwise raw text under "message"
@@ -42,7 +44,19 @@ def sample_no_repeat(pool, recent_set, max_attempts=20):
         if c not in recent_set:
             recent_set.add(c)
             if len(recent_set) > 200:
-                # keep small
+                # keep small; using pop on set is fine
                 recent_set.pop()
             return c
     return random.choice(pool)
+
+# new: simple redaction util (useful for logs / outputs)
+def redact_sensitive(text: str) -> str:
+    """
+    Redact phone numbers, long digit sequences and UPI-like tokens from text.
+    """
+    if not text:
+        return text
+    red = PHONE_RE.sub("(phone)", text)
+    red = re.sub(r"\b\d{4,}\b", "[redacted]", red)
+    red = UPI_RE.sub("(UPI)", red)
+    return red
