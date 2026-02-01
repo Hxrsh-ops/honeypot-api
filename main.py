@@ -177,10 +177,15 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    try:
-        body = await request.json()
-    except:
-        body = {}
+    body = {}
+    content_type = request.headers.get("content-type", "")
+    
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except:
+            body = {}
+
 
     msg = (
         body.get("message")
@@ -220,4 +225,4 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
         "messages_seen": len(conversation_memory[session_id]),
         "extracted_intelligence": extracted_intel[session_id]
     }
-#completed
+#completed 
