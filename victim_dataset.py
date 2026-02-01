@@ -1,7 +1,7 @@
 # ==========================================
 # SUPER HUMAN VICTIM DATASET (EXTENDED, STYLES + SCENARIOS)
 # ==========================================
-
+import random
 # BANK NAMES / DOMAINS (used for legitimacy heuristics)
 BANKS = [
     "sbi", "hdfc", "icici", "axis", "canara", "pnb", "bob", "idbi", "kotak",
@@ -309,5 +309,42 @@ ALL_SCENARIO_POOLS = {
     "phishing": PHISHING_LINKS,
     "authority": AUTHORITY_SCENARIOS
 }
+
+# --- Programmatic augmentation to expand the dataset (keeps file manageable) ---
+PERSONA_NAMES = ["Arjun","Ravi","Sita","Priya","Anita","Vikas","Rahul","Asha"]
+AMOUNTS = ["₹500","₹1,000","₹2,500","₹5,000","₹10,000"]
+COMMON_REASONS = ["refund","verification fee","tax","processing fee","account lock"]
+LONG_ADDITIONS = []
+
+for name in PERSONA_NAMES:
+    for amt in AMOUNTS:
+        for reason in COMMON_REASONS:
+            LONG_ADDITIONS.append(f"{name}, we have a pending {reason} of {amt} to be processed. Please provide account/UPI details.")
+            LONG_ADDITIONS.append(f"Dear customer, this is an alert regarding {reason}, reference ID {random.randint(10000,99999)}.")
+            LONG_ADDITIONS.append(f"{name}, please confirm the account number or UPI ID for {reason} of {amt}.")
+
+# add augmented lines to probing pool and refund scenarios
+PROBING = list(dict.fromkeys(PROBING + LONG_ADDITIONS[:200]))
+REFUND_SCENARIOS = list(dict.fromkeys(REFUND_SCENARIOS + LONG_ADDITIONS[200:400] if len(LONG_ADDITIONS)>400 else REFUND_SCENARIOS + LONG_ADDITIONS[:200]))
+
+# Add longer dialogues as example templates (used by future persona-driven flows)
+LONG_DIALOGUES = [
+    [
+        "Hi, this is fraud control from the bank, urgent verification required",
+        "Who am I speaking with? (sorry, who is this?)",
+        "I am Rahul from Fraud Dept., please confirm your name and last 4 digits of account",
+        "Why do you need my account details? (this sounds a bit unusual)",
+        "This is standard: we need it to release a pending refund",
+        "Can you share a formal ticket ID or email for this request? (which bank exactly?)",
+    ],
+    [
+        "Dear customer: transaction of ₹5000 was flagged — confirm immediately",
+        "I didn't get any notification though, where did this show up?",
+        "We sent an SMS. Please share your UPI to process a refund",
+        "I never share OTPs. I'll call the bank's official number if this is real."
+    ]
+]
+
+# Expose LONG_DIALOGUES for any higher-level strategist or tests
 
 # --- End of dataset ---

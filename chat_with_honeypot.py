@@ -1,15 +1,18 @@
 import requests
 import uuid
+import os
 
-API_URL = "https://web-production-df2ff.up.railway.app/honeypot"
-API_KEY = "test-key"
+# use local default for testing/development
+API_URL = os.getenv("HONEYPOT_URL", "http://127.0.0.1:8000/honeypot")
+API_KEY = os.getenv("HONEYPOT_API_KEY", "")
 
 session_id = str(uuid.uuid4())
 
 headers = {
     "Content-Type": "application/json",
-    "x-api-key": API_KEY
 }
+if API_KEY:
+    headers["x-api-key"] = API_KEY
 
 print("🔥 Honeypot Chat Started")
 print("Type 'exit' to quit\n")
@@ -26,7 +29,10 @@ while True:
 
     try:
         r = requests.post(API_URL, json=payload, headers=headers, timeout=10)
-        data = r.json()
-        print("Bot:", data.get("reply"))
+        try:
+            data = r.json()
+            print("Bot:", data.get("reply"))
+        except Exception:
+            print("Bot (non-json):", r.text)
     except Exception as e:
         print("Error:", e)

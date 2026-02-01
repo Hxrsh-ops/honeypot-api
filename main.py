@@ -128,6 +128,23 @@ def choose_reply_from_dataset(strategy: str, session: dict) -> str:
     return reply
 
 
+# --- JSON sanitizer to make session inspection safe for JSONResponse ---
+def _sanitize_for_json(obj):
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, set):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    # fallback to string representation
+    try:
+        return str(obj)
+    except Exception:
+        return repr(obj)
+
+
 # ================= ROOT (ALL METHODS SAFE) =================
 @app.api_route("/", methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"])
 async def root_probe():
@@ -137,6 +154,12 @@ async def root_probe():
 @app.api_route("/honeypot", methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"])
 async def honeypot(request: Request):
     try:
+        # enforce API key if configured
+        if API_KEY:
+            provided = request.headers.get("x-api-key", "")
+            if provided != API_KEY:
+                return JSONResponse({"error": "unauthorized"}, status_code=403)
+
         # robust parsing
         body = await safe_parse_body(request)
         sender = body.get("sender") or body.get("from") or ""
@@ -152,6 +175,7 @@ async def honeypot(request: Request):
         session_id = body.get("session_id") or str(uuid.uuid4())
         session = get_session(session_id)
 
+        # instantiate a single agent and record observation once
         agent = Agent(session)
         agent.observe(msg, raw=body)
 
@@ -159,10 +183,6 @@ async def honeypot(request: Request):
         if len(session["turns"]) > MAX_TURNS:
             sessions.pop(session_id, None)
             return JSONResponse({"reply": "I’ll check this directly with the bank.", "session_id": session_id})
-
-        # observe via agent (updates claims and contradictions)
-        agent = Agent(session)
-        agent.observe(msg)
 
         # classify intent & strategy
         intent = agent.detect_intent(msg)
@@ -181,18 +201,25 @@ async def honeypot(request: Request):
                 "I don't share OTPs or passwords. I'll contact my bank directly."
             ]
             # include dataset polite replies
-            reply = sample_no_repeat(reply_pool + INTRO_ACK, session["recent_responses"])
+            reply = sample_no_repeat(reply_pool + INTRO_ACK, session.setdefault("recent_responses", set()))
             strategy_tag = "legitimate_verification"
         else:
-            # scam path: choose reply based on strategy + dataset
-            # use dataset mapping to choose more varied responses
-            # incorporate persona style
-            reply = choose_reply_from_dataset(strategy, session)
-            strategy_tag = strategy
-
+            # scam path: choose reply based on strategy + agent state
+            # prefer agent.generate_reply for coherence with persona/state
             # safety enforcement: never reveal OTP, never perform transactions
             if re.search(r"\b(otp|one time password|pin|password)\b", msg.lower()):
                 reply = random.choice(OTP_WARNINGS)
+                strategy_tag = "challenge"
+            else:
+                # let agent generate a reply (uses recent responses internally)
+                reply = agent.generate_reply(strategy, msg)
+                strategy_tag = strategy
+
+        # record outgoing reply in session (keeps conversation state)
+        now = time.time()
+        session.setdefault("turns", []).append({"text": reply, "direction": "out", "ts": now})
+        session.setdefault("recent_responses", set()).add(reply)
+        session.setdefault("strategy_history", []).append({"strategy": strategy_tag, "intent": intent, "ts": now})
 
         # short random delay to appear human
         await asyncio.sleep(random.uniform(0.3, 1.4))
@@ -214,3 +241,20 @@ async def honeypot(request: Request):
         # never crash the endpoint; return safe fallback
         print("ERROR in /honeypot:", str(e))
         return JSONResponse({"reply": "Sorry, I’m having trouble. I’ll check with the bank.", "session_id": str(uuid.uuid4())})
+
+# simple session inspection endpoint (useful while integrating)
+@app.get("/sessions/{session_id}")
+async def inspect_session(session_id: str, request: Request):
+    if API_KEY:
+        provided = request.headers.get("x-api-key", "")
+        if provided != API_KEY:
+            return JSONResponse({"error": "unauthorized"}, status_code=403)
+    sess = sessions.get(session_id)
+    if not sess:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    # shallow sanitized copy (avoid sending raw request bodies)
+    sanitized = {k: v for k, v in sess.items() if k != "turns"}
+    sanitized["turns_preview"] = sess.get("turns", [])[-8:]
+    # convert sets / non-serializables to JSON-safe structures
+    sanitized = _sanitize_for_json(sanitized)
+    return JSONResponse({"session_id": session_id, "session": sanitized})
