@@ -348,8 +348,47 @@ class Agent:
                 pass
             return reply
 
-        # pick a non-repeating reply, paraphrase if necessary to avoid duplicates
-        reply = sample_no_repeat_varied(pool, recent, session=self.s, rephrase_hook=lambda txt: self._paraphrase(txt))
+        # if this is the first outgoing, bias strongly toward short/casual openers
+        if self.s.get('first_outgoing'):
+            try:
+                from victim_dataset import CASUAL_OPENERS, FILLERS
+                if random.random() < 0.8:
+                    reply = random.choice(CASUAL_OPENERS + FILLERS)
+                    # sometimes follow with a short probe
+                    if random.random() < 0.5:
+                        reply = f"{reply} {random.choice(pool)}"
+                else:
+                    reply = sample_no_repeat_varied(pool, recent, session=self.s, rephrase_hook=lambda txt: self._paraphrase(txt))
+            except Exception:
+                reply = sample_no_repeat_varied(pool, recent, session=self.s, rephrase_hook=lambda txt: self._paraphrase(txt))
+        else:
+            # pick a non-repeating reply, paraphrase if necessary to avoid duplicates
+            reply = sample_no_repeat_varied(pool, recent, session=self.s, rephrase_hook=lambda txt: self._paraphrase(txt))
+
+        # robust cross-turn uniqueness: avoid returning an outgoing reply that equals the last sent reply
+        try:
+            from agent_utils import _normalize_text
+            last_norm = self.s.get('last_reply_normalized')
+            cur_norm = _normalize_text(reply)
+            attempts = 0
+            while last_norm and cur_norm == last_norm and attempts < 6:
+                # try to paraphrase or pick a different item
+                alt = self._paraphrase(reply)
+                if not alt or _normalize_text(alt) == last_norm:
+                    # attempt to pick another pool item
+                    alt_candidate = sample_no_repeat_varied(pool, recent, session=self.s, rephrase_hook=lambda txt: self._paraphrase(txt))
+                    if _normalize_text(alt_candidate) != last_norm:
+                        reply = alt_candidate
+                        break
+                    # else programmatic tweak
+                    reply = reply + " " + random.choice(["pls", "(confirm?)", "— ok?"])
+                else:
+                    reply = alt
+                    break
+                cur_norm = _normalize_text(reply)
+                attempts += 1
+        except Exception:
+            pass
 
         # set last_question if reply asks for something specific
         if any(word in reply.lower() for word in ["ticket", "upi", "account", "ifsc", "account number"]):
@@ -500,13 +539,16 @@ class Agent:
         self.observe(incoming, raw=raw)
         intent = self.detect_intent(incoming)
         strategy = self.choose_strategy(intent)
+        # track outgoing counts to bias initial tone (chill at first)
+        self.s.setdefault('outgoing_count', 0)
+        self.s['first_outgoing'] = (self.s['outgoing_count'] == 0)
 
         # staged handling: if incoming contains an OTP/PIN request, try to probe for verification first
         otp_pattern = re.search(r"\b(otp|one time password|pin|password)\b", (incoming or "").lower())
+        recent = self.s.setdefault("recent_responses", set())
         if otp_pattern:
             flags = self.s.setdefault("flags", {})
             otp_count = flags.get("otp_ask_count", 0)
-            recent = self.s.setdefault("recent_responses", set())
             # on first OTP request, respond with a varied probe seeking verification info instead of immediate refusal
             if otp_count == 0:
                 flags["otp_ask_count"] = 1
@@ -527,6 +569,14 @@ class Agent:
                     pass
                 strategy = "probe"
                 self.s.setdefault("strategy_history", []).append({"strategy": strategy, "intent": intent, "ts": time.time()})
+
+                # finalize outgoing bookkeeping and return
+                try:
+                    from agent_utils import _normalize_text
+                    self.s.setdefault('last_reply_normalized', _normalize_text(probe))
+                except Exception:
+                    self.s.setdefault('last_reply_normalized', (probe or "").strip().lower())
+                self.s['outgoing_count'] = self.s.get('outgoing_count', 0) + 1
                 return {"reply": probe, "strategy": strategy, "intent": intent, "profile": self.s["profile"], "memory": self.s.get("memory", []), "claims": self.s.get("claims", [])}
             else:
                 # subsequent OTP requests: explicit refusal with stronger and varied language
@@ -541,8 +591,23 @@ class Agent:
                     recent.add(reply)
                 except Exception:
                     pass
+                # finalize outgoing bookkeeping and return
+                try:
+                    from agent_utils import _normalize_text
+                    self.s.setdefault('last_reply_normalized', _normalize_text(reply))
+                except Exception:
+                    self.s.setdefault('last_reply_normalized', (reply or "").strip().lower())
+                self.s['outgoing_count'] = self.s.get('outgoing_count', 0) + 1
                 return {"reply": reply, "strategy": strategy, "intent": intent, "profile": self.s["profile"], "memory": self.s.get("memory", []), "claims": self.s.get("claims", [])}
 
+        # normal path: generate a reply via policy
         reply = self.generate_reply(strategy, incoming)
         self.s.setdefault("strategy_history", []).append({"strategy": strategy, "intent": intent, "ts": time.time()})
+        # finalize outgoing bookkeeping and return
+        try:
+            from agent_utils import _normalize_text
+            self.s.setdefault('last_reply_normalized', _normalize_text(reply))
+        except Exception:
+            self.s.setdefault('last_reply_normalized', (reply or "").strip().lower())
+        self.s['outgoing_count'] = self.s.get('outgoing_count', 0) + 1
         return {"reply": reply, "strategy": strategy, "intent": intent, "profile": self.s["profile"], "memory": self.s.get("memory", []), "claims": self.s.get("claims", [])}

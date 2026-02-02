@@ -99,14 +99,22 @@ def test_detect_suspicious_empid_ifsc():
 def test_casual_then_escalate_on_repeats():
     s = {}
     a = Agent(s)
-    # first identical incoming => casual opener expected
+    # first reply should be casual-chill biased
     r1 = a.generate_reply("probe", "Please share your employee id and branch phone")
     r1s = r1 if isinstance(r1, str) else r1
     assert any(x in r1s.lower() for x in ["hmm", "hey", "one sec", "ok", "oh", "hi", "lemme", "gimme", "hold on"]) or len(r1s.split()) < 6
-    # simulate repeated identical incoming messages
-    r2 = a.generate_reply("probe", "Please share your employee id and branch phone")
-    r3 = a.generate_reply("probe", "Please share your employee id and branch phone")
-    r2s = r2 if isinstance(r2, str) else r2
-    r3s = r3 if isinstance(r3, str) else r3
-    # after repeats, expect a stronger/probing/challenge-type reply
-    assert any(k in (r3s.lower()) for k in ["suspicious", "official", "ticket", "email", "branch", "call"])
+    # simulate repeated identical incoming messages and ensure the bot does not repeat the exact same outgoing text
+    out_prev = None
+    repeated_ok = True
+    for _ in range(4):
+        out = a.generate_reply("probe", "Please share your employee id and branch phone")
+        out_s = out if isinstance(out, str) else out
+        if out_s == out_prev:
+            repeated_ok = False
+            break
+        out_prev = out_s
+    assert repeated_ok, "Bot repeated the same outgoing message across repeated identical incoming messages"
+    # after repeats, expect an escalation reply containing escalation keywords
+    final = a.generate_reply("probe", "Please share your employee id and branch phone")
+    final_s = final if isinstance(final, str) else final
+    assert any(k in final_s.lower() for k in ["suspicious", "official", "ticket", "email", "branch", "call"])
