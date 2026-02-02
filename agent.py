@@ -341,9 +341,9 @@ class Agent:
                 reply = sample_no_repeat_varied(probes, recent, session=self.s, rephrase_hook=lambda t: self._paraphrase(t))
             except Exception:
                 reply = random.choice(probes)
-            # ensure recorded
+            # ensure recorded (store normalized form)
             try:
-                recent.add(reply)
+                recent.add(_normalize_text(reply))
             except Exception:
                 pass
             return reply
@@ -461,8 +461,10 @@ class Agent:
 
         # ensure final reply is unique in recent responses; if we changed it, add to recent set
         try:
-            if reply not in recent:
-                recent.add(reply)
+            # store normalized form to keep recent_responses consistent
+            norm = _normalize_text(reply)
+            if norm not in recent:
+                recent.add(norm)
         except Exception:
             pass
 
@@ -522,13 +524,14 @@ class Agent:
                     break
                 attempts += 1
             try:
-                recent.add(reply)
+                recent.add(_normalize_text(reply))
             except Exception:
                 pass
         except Exception:
             try:
-                if reply not in recent:
-                    recent.add(reply)
+                rn = _normalize_text(reply)
+                if rn not in recent:
+                    recent.add(rn)
             except Exception:
                 pass
 
@@ -562,9 +565,9 @@ class Agent:
                         "I'm careful with codes—can you share a branch phone or official ticket ID so I can call?",
                         "Why do you need the OTP? Please share your designation and extension for verification."
                     ])
-                # ensure probe recorded to avoid repeating the exact text
+                # ensure probe recorded to avoid repeating the exact text (store normalized)
                 try:
-                    recent.add(probe)
+                    recent.add(_normalize_text(probe))
                 except Exception:
                     pass
                 strategy = "probe"
@@ -588,7 +591,7 @@ class Agent:
                 strategy = "challenge"
                 self.s.setdefault("strategy_history", []).append({"strategy": strategy, "intent": intent, "ts": time.time()})
                 try:
-                    recent.add(reply)
+                    recent.add(_normalize_text(reply))
                 except Exception:
                     pass
                 # finalize outgoing bookkeeping and return

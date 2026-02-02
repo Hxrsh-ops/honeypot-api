@@ -44,11 +44,16 @@ def _normalize_text(s: str) -> str:
 
 def sample_no_repeat(pool, recent_set, max_attempts=20):
     # track normalized values to detect repeats regardless of capitalization/punctuation
+    # recent_set may contain raw or already-normalized strings; build normalized view
     normalized = set(_normalize_text(x) for x in recent_set)
     for _ in range(max_attempts):
         c = random.choice(pool)
         if _normalize_text(c) not in normalized:
-            recent_set.add(c)
+            # store normalized form to prevent equivalent future replies
+            try:
+                recent_set.add(_normalize_text(c))
+            except Exception:
+                pass
             normalized.add(_normalize_text(c))
             if len(recent_set) > 200:
                 # keep small; using pop on set is fine
@@ -58,7 +63,7 @@ def sample_no_repeat(pool, recent_set, max_attempts=20):
     for c in pool:
         if _normalize_text(c) not in normalized:
             try:
-                recent_set.add(c)
+                recent_set.add(_normalize_text(c))
             except Exception:
                 pass
             return c
@@ -72,12 +77,13 @@ def sample_no_repeat_varied(pool, recent_set, session=None, rephrase_hook=None, 
     or programmatically produce a rephrased variant that is not in recent_set.
     """
     # first, try to pick an unused item
+    # recent_set may already contain normalized entries; build normalized view
     normalized = set(_normalize_text(x) for x in recent_set)
     for _ in range(max_attempts):
         c = random.choice(pool)
         if _normalize_text(c) not in normalized:
             try:
-                recent_set.add(c)
+                recent_set.add(_normalize_text(c))
             except Exception:
                 pass
             normalized.add(_normalize_text(c))
@@ -94,7 +100,7 @@ def sample_no_repeat_varied(pool, recent_set, session=None, rephrase_hook=None, 
             new_text = rephrase_hook(base)
             if new_text and _normalize_text(new_text) not in normalized and new_text != base:
                 try:
-                    recent_set.add(new_text)
+                    recent_set.add(_normalize_text(new_text))
                 except Exception:
                     pass
                 if len(recent_set) > 400:
@@ -131,15 +137,21 @@ def sample_no_repeat_varied(pool, recent_set, session=None, rephrase_hook=None, 
 
     for _ in range(10):
         cand = programmatic_paraphrase(base)
-        if cand not in recent_set and cand != base:
-            recent_set.add(cand)
+        if _normalize_text(cand) not in normalized and cand != base:
+            try:
+                recent_set.add(_normalize_text(cand))
+            except Exception:
+                pass
             if len(recent_set) > 400:
                 recent_set.pop()
             return cand
 
     # as a last resort, append a random filler to the base
     fallback = base + " " + random.choice(["(confirm?)", "(pls)", "- ok?", "...pls reply"]) 
-    recent_set.add(fallback)
+    try:
+        recent_set.add(_normalize_text(fallback))
+    except Exception:
+        pass
     if len(recent_set) > 400:
         recent_set.pop()
     return fallback
