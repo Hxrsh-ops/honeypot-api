@@ -3,6 +3,7 @@ import uuid
 import os
 import time
 import subprocess
+import sys
 from urllib.parse import urlparse
 
 # use local default for testing/development
@@ -33,10 +34,16 @@ def ensure_server(api_url, timeout=10):
     # only auto-start for localhost/127.0.0.1 and when AUTOSTART permitted
     if str(parsed.hostname) in ("127.0.0.1", "localhost") and AUTOSTART != "0":
         print("Local server appears down. Attempting to start uvicorn locally...")
-        # spawn uvicorn in background; user must have uvicorn installed
-        # run from the current directory so it loads 'main:app'
-        proc = subprocess.Popen(["uvicorn", "main:app", "--host", parsed.hostname, "--port", str(parsed.port or 8000)],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Prefer running uvicorn using the current Python executable so venv is respected
+        # Check if uvicorn is importable first to give a clear error if not installed
+        try:
+            import uvicorn  # type: ignore
+        except Exception:
+            print(f"uvicorn is not available in this Python environment. Install with:\n{sys.executable} -m pip install uvicorn")
+            return False
+        # spawn uvicorn in background using the venv's python -m uvicorn
+        cmd = [sys.executable, "-m", "uvicorn", "main:app", "--host", parsed.hostname, "--port", str(parsed.port or 8000)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # wait until server responds or timeout
         deadline = time.time() + timeout
         while time.time() < deadline:

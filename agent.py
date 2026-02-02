@@ -271,6 +271,11 @@ class Agent:
                 CASUAL_OPENERS = ["hmm", "one sec"]
                 FILLERS = ["hmm", "one sec"]
 
+            # ensure some short-only fillers are available so base replies can be short
+            SHORT_VARIANTS = ["hmm", "one sec", "ok", "hey", "uhh", "lemme check", "gimme a sec", "hold on"]
+            if random.random() < 0.45:
+                pool = SHORT_VARIANTS + pool
+
             # track repeated incoming messages to decide escalation
             last_in = self.s.setdefault("last_incoming", None)
             if last_in and (last_in.strip().lower() == (incoming or "").strip().lower()):
@@ -355,13 +360,15 @@ class Agent:
             return reply
 
         # if this is the first outgoing, bias strongly toward short/casual openers
+        FIRST_SHORT_OPENERS = ["hmm", "hey", "one sec", "ok", "oh", "hi", "lemme check", "gimme a sec", "hold on"]
         if self.s.get('first_outgoing'):
             try:
                 from victim_dataset import CASUAL_OPENERS, FILLERS
-                if random.random() < 0.8:
-                    reply = random.choice(CASUAL_OPENERS + FILLERS)
-                    # sometimes follow with a short probe
-                    if random.random() < 0.5:
+                if random.random() < 0.9:
+                    # pick a clearly short opener from the curated list
+                    reply = random.choice(FIRST_SHORT_OPENERS)
+                    # rarely follow with a short probe (small chance)
+                    if random.random() < 0.15:
                         reply = f"{reply} {random.choice(pool)}"
                 else:
                     reply = sample_no_repeat_varied(pool, recent, session=self.s, rephrase_hook=lambda txt: self._paraphrase(txt))
@@ -419,7 +426,11 @@ class Agent:
             reply = reply + " " + random.choice(["Please be precise.", "I don’t want issues.", "Explain step by step."])
 
         # length variation: try to produce short/medium/long replies to simulate humans
-        length = random.choices(["short", "medium", "long"], weights=[0.55, 0.33, 0.12])[0]
+        # Use a simple deterministic cycle per-agent to ensure varied outputs across turns
+        cycle = self.s.setdefault("length_cycle", ["short", "medium", "long"])
+        idx = self.s.get("length_cycle_index", 0)
+        length = cycle[idx % len(cycle)]
+        self.s["length_cycle_index"] = idx + 1
         if length == "short":
             # if this reply declares state (e.g., 'at work', 'busy'), preserve it; otherwise make concise
             state_tokens = ["at work", "i'm at work", "busy", "i'll check", "i will check"]
