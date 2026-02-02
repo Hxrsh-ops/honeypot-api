@@ -10,7 +10,7 @@ from typing import Dict, Any, List
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from agent_utils import safe_parse_body, detect_links, UPI_RE, PHONE_RE, NAME_RE, BANK_RE, sample_no_repeat, sample_no_repeat_varied, redact_sensitive
+from agent_utils import safe_parse_body, detect_links, UPI_RE, PHONE_RE, NAME_RE, BANK_RE, sample_no_repeat, sample_no_repeat_varied, redact_sensitive, _normalize_text
 from agent import Agent
 # optional LLM paraphrase helper (best-effort import)
 try:
@@ -213,9 +213,17 @@ async def honeypot(request: Request):
 
         agent = Agent(session)  # create agent; do not call observe() twice
 
-        # detect legitimacy vs scam heuristics first
-        legit = detect_legitimate(msg, sender)
-        is_scam = not legit["is_legit"]
+        # detect legitimacy vs scam heuristics on the first incoming only
+        if session.get("checked_legit"):
+            is_scam = session.get("is_scam", True)
+            legit = {"is_legit": not is_scam, "score": session.get("legit_score", 0.0), "reason": session.get("legit_reason", "")}
+        else:
+            legit = detect_legitimate(msg, sender)
+            is_scam = not legit["is_legit"]
+            session["checked_legit"] = True
+            session["is_scam"] = bool(is_scam)
+            session["legit_score"] = float(legit.get("score", 0.0))
+            session["legit_reason"] = legit.get("reason", "")
 
         if not is_scam:
             # legitimate path: observe synchronously and reply using dataset
@@ -229,7 +237,10 @@ async def honeypot(request: Request):
             strategy_tag = "legitimate_verification"
             now = time.time()
             session.setdefault("turns", []).append({"text": reply, "direction": "out", "ts": now})
-            session.setdefault("recent_responses", set()).add(reply)
+            try:
+                session.setdefault("recent_responses", set()).add(_normalize_text(reply))
+            except Exception:
+                session.setdefault("recent_responses", set()).add((reply or "").strip().lower())
             session.setdefault("strategy_history", []).append({"strategy": strategy_tag, "intent": "legitimate", "ts": now})
         else:
             # scam path: run agent.respond in a thread (may call LLM)
@@ -238,7 +249,10 @@ async def honeypot(request: Request):
             strategy_tag = out.get("strategy", "probe")
             now = time.time()
             session.setdefault("turns", []).append({"text": reply, "direction": "out", "ts": now})
-            session.setdefault("recent_responses", set()).add(reply)
+            try:
+                session.setdefault("recent_responses", set()).add(_normalize_text(reply))
+            except Exception:
+                session.setdefault("recent_responses", set()).add((reply or "").strip().lower())
 
         # short random delay to appear human
         await asyncio.sleep(random.uniform(0.3, 1.4))

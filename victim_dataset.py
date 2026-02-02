@@ -349,6 +349,15 @@ CASUAL_OPENERS = [
     "ok, what's happening?"
 ]
 
+# 'Dumb but plausible' victim lines to play the part of an easy target
+DUMB_VICTIM = [
+    "Oh really? I don't know much about this stuff, can you tell me step by step?",
+    "I'm not good with these apps, can you guide me which buttons to press?",
+    "I don't use UPI often — what's that ID look like?",
+    "If you say so, but I'm a bit confused. Do I need to share any code?",
+    "I can try, but I'm not tech-savvy — please explain slowly."
+]
+
 for name in PERSONA_NAMES:
     for amt in AMOUNTS:
         for reason in COMMON_REASONS:

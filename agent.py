@@ -119,6 +119,12 @@ class Agent:
             })
         claims.append({"kind": kind, "value": value, "when": ts, "msg": src})
         self.s["profile"][kind] = value
+        # also persist a simple extracted table row for quick export/analysis
+        try:
+            tbl = self.s.setdefault("extracted_table", [])
+            tbl.append({"kind": kind, "value": value, "when": ts, "source_msg": src})
+        except Exception:
+            pass
 
     def _is_valid_ifsc(self, code: str) -> bool:
         # IFSC must be exactly 11 chars: 4 letters + 0 + 6 alnum
@@ -418,17 +424,22 @@ class Agent:
             # if this reply declares state (e.g., 'at work', 'busy'), preserve it; otherwise make concise
             state_tokens = ["at work", "i'm at work", "busy", "i'll check", "i will check"]
             if not any(t in reply.lower() for t in state_tokens):
-                # ensure short replies are concise: keep the first clause or substitute a short filler variant
-                if len(reply.split()) > 8:
-                    short_variants = ["hmm", "one sec", "ok", "I’ll check", "lemme check", "hold on"]
-                    # pick a short variant that avoids exact repeats
+                # Make short replies frequent and concise: often replace with a short filler variant
+                short_variants = ["hmm", "one sec", "ok", "I’ll check", "lemme check", "hold on", "uhh", "gimme a sec"]
+                if random.random() < 0.8:
                     try:
                         reply = sample_no_repeat(short_variants, recent)
                     except Exception:
-                        if random.random() < 0.5:
+                        reply = random.choice(short_variants)
+                else:
+                    # fallback to trimming the original reply
+                    if len(reply.split()) > 8:
+                        try:
+                            reply = sample_no_repeat(short_variants, recent)
+                        except Exception:
                             reply = random.choice(short_variants)
-                        else:
-                            reply = ' '.join(reply.split('.')[:1])[:120]
+                    else:
+                        reply = ' '.join(reply.split('.')[:1])[:120]
         elif length == "medium":
             # append a short clarifying sentence or small-talk style phrase
             extra = random.choice([
