@@ -387,6 +387,15 @@ LONG_DIALOGUES = [
     ]
 ]
 
+# Verification templates used when the agent needs to verify a previously-provided claim
+VERIFY_TEMPLATES = [
+    "Earlier you said {value} for {kind} — can you confirm that again?",
+    "You mentioned {value} as the {kind}. That doesn't look right to me — what's the branch/address?",
+    "I tried to check but couldn't find {value} as a valid {kind}. Can you share an official contact or ticket so I can verify?",
+    "That {kind} ({value}) seems odd — please provide a reference ID or branch phone so I can confirm.",
+    "I can't find {value} in my bank app. Are you sure you mean {value}? Please provide branch phone or email."
+]
+
 # Expose LONG_DIALOGUES for any higher-level strategist or tests
 
 # --- End of dataset ---

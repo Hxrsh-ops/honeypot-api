@@ -125,6 +125,11 @@ class Agent:
             tbl.append({"kind": kind, "value": value, "when": ts, "source_msg": src})
         except Exception:
             pass
+        # mark last_claim for easy reference in replies
+        try:
+            self.s["last_claim"] = {"kind": kind, "value": value, "when": ts}
+        except Exception:
+            pass
 
     def _is_valid_ifsc(self, code: str) -> bool:
         # IFSC must be exactly 11 chars: 4 letters + 0 + 6 alnum
@@ -136,6 +141,23 @@ class Agent:
             return True
         if re.search(r"\d{12,}", eid):
             return True
+        return False
+
+    def _verify_bank_name(self, name: str) -> bool:
+        # simple check: known bank keywords
+        if not name:
+            return False
+        n = name.lower().strip()
+        try:
+            from victim_dataset import BANKS
+        except Exception:
+            return False
+        for b in BANKS:
+            if b.lower() in n or n in b.lower():
+                return True
+        for b in BANKS:
+            if any(tok in n for tok in b.lower().split()):
+                return True
         return False
     def detect_intent(self, msg: str):
         t = (msg or "").lower()
@@ -246,6 +268,21 @@ class Agent:
         persona = self.s.get("persona", "confused")
         state = self.s.get("persona_state", "free")
         escalation = False
+
+        # If there is a recent claim, sometimes reference it to appear consistent/human
+        last_claim = self.s.get("last_claim")
+        if last_claim and strategy in ("probe", "challenge") and random.random() < 0.45:
+            try:
+                from victim_dataset import VERIFY_TEMPLATES
+                tpl = random.choice(VERIFY_TEMPLATES)
+                reply = tpl.format(kind=last_claim.get("kind"), value=last_claim.get("value"))
+                try:
+                    recent.add(_normalize_text(reply))
+                except Exception:
+                    pass
+                return reply
+            except Exception:
+                pass
 
         # If the last question expects a numeric answer, and incoming contains digits, confirm
         if self.s.get("last_question"):
@@ -431,6 +468,7 @@ class Agent:
         idx = self.s.get("length_cycle_index", 0)
         length = cycle[idx % len(cycle)]
         self.s["length_cycle_index"] = idx + 1
+        short_mode = False
         if length == "short":
             # if this reply declares state (e.g., 'at work', 'busy'), preserve it; otherwise make concise
             state_tokens = ["at work", "i'm at work", "busy", "i'll check", "i will check"]
@@ -442,6 +480,7 @@ class Agent:
                         reply = sample_no_repeat(short_variants, recent)
                     except Exception:
                         reply = random.choice(short_variants)
+                    short_mode = True
                 else:
                     # fallback to trimming the original reply
                     if len(reply.split()) > 8:
@@ -467,19 +506,20 @@ class Agent:
             ]
             reply = f"{reply} {random.choice(extras)}"
 
-        # optionally introduce slang/abbrev to look more human
-        try:
-            from victim_dataset import SLANGS, ABBREVS
-            if random.random() < 0.18:
-                # simple substitution of a random slang mapping
-                k = random.choice(list(SLANGS.keys()))
-                if k.lower() in reply.lower():
-                    sub = random.choice(SLANGS[k])
-                    reply = re.sub(r"\b" + re.escape(k) + r"\b", sub, reply, flags=re.I)
-            if random.random() < 0.08:
-                reply = reply + " " + random.choice(ABBREVS)
-        except Exception:
-            pass
+        # optionally introduce slang/abbrev to look more human (skip major edits in short_mode)
+        if not short_mode:
+            try:
+                from victim_dataset import SLANGS, ABBREVS
+                if random.random() < 0.18:
+                    # simple substitution of a random slang mapping
+                    k = random.choice(list(SLANGS.keys()))
+                    if k.lower() in reply.lower():
+                        sub = random.choice(SLANGS[k])
+                        reply = re.sub(r"\b" + re.escape(k) + r"\b", sub, reply, flags=re.I)
+                if random.random() < 0.08:
+                    reply = reply + " " + random.choice(ABBREVS)
+            except Exception:
+                pass
 
         # ensure final reply is unique in recent responses; if we changed it, add to recent set
         try:
@@ -490,28 +530,55 @@ class Agent:
         except Exception:
             pass
 
-        # Optionally refine via LLM (probabilistic). Synchronous call is okay
-        try:
-            use_llm = (str(USE_LLM) == "1") and (generate_reply_with_llm is not None) and (random.random() < float(os.getenv("LLM_USAGE_PROB", LLM_USAGE_PROB or 0.6)))
-            if use_llm:
-                llm_out = generate_reply_with_llm(self.s, incoming, strategy)
-                if llm_out:
-                    # Prefer LLM output but fall back to rule reply on odd results
-                    # Keep occasional filler/hesitation from original reply to appear human
-                    if random.random() < 0.6:
-                        reply = llm_out
-                    else:
-                        reply = f"{reply} {llm_out}"
-                    # record LLM usage in memory (already done in adapter, but keep a short marker)
-                    self.s.setdefault("memory", []).append({"type": "llm_refined", "when": time.time(), "strategy": strategy})
-        except Exception:
-            # fail safe: keep original reply
-            pass
+        # Optionally refine via LLM (probabilistic). Skip heavy refinement for short_mode
+        if not short_mode:
+            try:
+                use_llm = (str(USE_LLM) == "1") and (generate_reply_with_llm is not None) and (random.random() < float(os.getenv("LLM_USAGE_PROB", LLM_USAGE_PROB or 0.6)))
+                if use_llm:
+                    llm_out = generate_reply_with_llm(self.s, incoming, strategy)
+                    if llm_out:
+                        # Prefer LLM output but fall back to rule reply on odd results
+                        # Keep occasional filler/hesitation from original reply to appear human
+                        if random.random() < 0.6:
+                            reply = llm_out
+                        else:
+                            reply = f"{reply} {llm_out}"
+                        # record LLM usage in memory (already done in adapter, but keep a short marker)
+                        self.s.setdefault("memory", []).append({"type": "llm_refined", "when": time.time(), "strategy": strategy})
+            except Exception:
+                # fail safe: keep original reply
+                pass
 
         # escalation enforcement: if we escalated due to repeated incoming and reply lacks an escalation token, append a short challenge
         try:
             if escalation and not any(k in (reply or "").lower() for k in ["suspicious", "official", "ticket", "email", "branch", "call"]):
-                reply = f"{reply} Please provide an official email or branch phone so I can verify."
+                # keep escalation concise when in short_mode
+                if short_mode:
+                    reply = f"{reply} I need an official email or branch phone to verify."
+                else:
+                    reply = f"{reply} Please provide an official email or branch phone so I can verify."
+        except Exception:
+            pass
+
+        # Enforce desired length bucket from deterministic cycle: if after all augmentations
+        # the reply no longer fits the selected `length`, coerce it to that bucket.
+        try:
+            # note: `length` and `short_mode` set earlier in this function
+            L = len((reply or "").strip())
+            if length == "short" and L >= 40:
+                short_variants = ["hmm", "one sec", "ok", "I’ll check", "lemme check", "hold on", "uhh", "gimme a sec"]
+                try:
+                    reply = sample_no_repeat(short_variants, recent)
+                except Exception:
+                    reply = random.choice(short_variants)
+            elif length == "medium" and (L < 40 or L >= 100):
+                extras = ["Also, do you have an official ticket ID?", "Can you give the exact UPI ID again?", "I want to verify this on my app before proceeding."]
+                # try to make it medium-sized by appending a single short extra
+                if L < 40:
+                    reply = f"{reply} {random.choice(extras)}"
+                else:
+                    # trim overly long replies to a medium-sized summary
+                    reply = ' '.join(reply.split()[:18])
         except Exception:
             pass
 
