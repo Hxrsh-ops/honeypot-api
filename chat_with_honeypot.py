@@ -123,7 +123,7 @@ def main():
     # ensure base "/" is available before starting chat
     ensure_server(API_URL)
 
-    print("🔥 Honeypot Chat Started")
+    print("Honeypot Chat Started")
     print("Type 'exit' to quit\n")
 
     if args.auto:

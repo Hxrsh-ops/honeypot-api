@@ -134,6 +134,7 @@ class Agent:
         self.s["flags"].setdefault("otp_ask_count", 0)
         self.s["flags"].setdefault("repeat_count", 0)
         self.s["flags"].setdefault("punct_complaint", False)
+        self.s["flags"].setdefault("asked_identity", False)
         self.s.setdefault("memory", [])
         self.s.setdefault("claims", {})
         self.s.setdefault("extracted_profile", {
@@ -364,6 +365,51 @@ class Agent:
             snippet += "..."
         return f"you said '{snippet}'"
 
+    def _reactive_override(self, incoming: str, signals: Dict[str, bool]) -> Optional[str]:
+        """
+        Short, highly reactive replies that anchor to the incoming text.
+        """
+        lower = (incoming or "").lower()
+
+        if "dont you trust me" in lower or "don't you trust me" in lower:
+            return "trust needs proof, not pressure"
+        if "why are you stalling" in lower or "why are you stalling?" in lower:
+            return "because you keep rushing me"
+        if "wht" in lower or lower.strip() in ("what", "wht", "what?"):
+            return "you messaged me, so explain properly"
+        if "you didnt tell me anything" in lower or "you didn't tell me anything" in lower:
+            return "exactly, you jumped to threat without details"
+
+        if signals.get("urgency") or "freeze" in lower or "blocked" in lower:
+            return random.choice([
+                "why no sms then",
+                "stop rushing and explain properly",
+                "if it's frozen how are you messaging",
+            ])
+
+        if signals.get("identity_claim") or "i am from" in lower:
+            return random.choice([
+                "which bank exactly, branch and city?",
+                "official email and employee id?",
+                "name and branch? then i'll verify",
+            ])
+
+        if signals.get("payment") and "upi" in lower:
+            return random.choice([
+                "why need my upi, this sounds off",
+                "share official email first",
+                "upi not needed for verification",
+            ])
+
+        if signals.get("link"):
+            return random.choice([
+                "link looks fake, send official website",
+                "not clicking links, give official email",
+                "why a random link?",
+            ])
+
+        return None
+
     # --------------------------------------------------------
     # Phase Selection
     # --------------------------------------------------------
@@ -383,11 +429,13 @@ class Agent:
             phases.extend(["resistance", "logic_doubt"])
         else:
             if signals.get("authority"):
-                phases.append("probing_identity")
-                phases.append("probing_bank")
+                if not self.s["flags"].get("asked_identity"):
+                    phases.append("probing_identity")
+                    phases.append("probing_bank")
             if signals.get("identity_claim") or signals.get("bank_claim"):
-                phases.append("probing_identity")
-                phases.append("probing_bank")
+                if not self.s["flags"].get("asked_identity"):
+                    phases.append("probing_identity")
+                    phases.append("probing_bank")
             if signals.get("payment"):
                 phases.append("probing_payment")
             if signals.get("link"):
@@ -527,6 +575,39 @@ class Agent:
             reply = self._style_scrubber(reply)
             return self._finalize_reply(reply, ["strong_resistance"], strategy, signals)
 
+        # memory probe (what did I say before?)
+        if signals.get("memory_probe"):
+            reply = self._memory_reply()
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["verification_loop"], "memory", signals)
+
+        # repeat complaint -> annoyance + clarify
+        if signals.get("repeat_complaint"):
+            reply = random.choice([
+                "you already said it, why repeating",
+                "i heard you, stop repeating",
+                "why keep saying same thing",
+                "you said it already, explain properly",
+            ])
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["annoyance", "fatigue"], "annoyed", signals)
+
+        # punctuation complaint
+        if signals.get("punct_complaint"):
+            reply = random.choice([
+                "ok ok no more question marks",
+                "fine, i will type normal",
+                "ok chill, tell me properly",
+            ])
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["cooldown_state"], "calm", signals)
+
+        # direct reactive override
+        override = self._reactive_override(incoming, signals)
+        if override:
+            reply = self._style_scrubber(override)
+            return self._finalize_reply(reply, ["logic_doubt", "probing_process"], "react", signals)
+
         if strategy == "delay":
             if self.s.get("persona_state") == "at_work":
                 reply = random.choice(DELAY_AT_WORK)
@@ -603,6 +684,8 @@ class Agent:
 
         self.s["phase_history"].append(phases)
         self.s["outgoing_count"] += 1
+        if "probing_identity" in phases or "who are you" in candidate.lower():
+            self.s["flags"]["asked_identity"] = True
 
         return candidate
 
