@@ -1,292 +1,182 @@
 # ============================================================
-# AGENT — FINAL MAXED VERSION
-# Brain of the honeypot
-#
-# Guarantees:
-# - No exact reply repetition (ever)
-# - Consistent human state
-# - Scam detection + info extraction
-# - Learns from every conversation
-# - Strategy adapts over time
+# agent.py — FINAL STABLE INTELLIGENT AGENT
+# Multi-Phase | Human-Like | Crash-Proof | Railway-Safe
 # ============================================================
 
-import re
-import time
+from typing import Dict, Any, List, Optional
 import random
-from typing import Dict, Any, Optional
+import logging
 
-from agent_utils import (
-    detect_links,
-    UPI_RE,
-    PHONE_RE,
-    BANK_RE,
-    NAME_RE,
-    sample_no_repeat_varied,
-    _normalize_text,
-)
+# ----------------------------
+# Safe imports (NEVER CRASH)
+# ----------------------------
+try:
+    import victim_dataset as vd
+except Exception as e:
+    vd = None
 
-from victim_dataset import (
-    FILLERS,
-    SMALL_TALK,
-    CONFUSION,
-    INTRO_ACK,
-    BANK_VERIFICATION,
-    COOPERATIVE,
-    PROBING,
-    SOFT_DOUBT,
-    RESISTANCE,
-    NEAR_FALL,
-    FATIGUE,
-    EXIT,
-    OTP_WARNINGS,
-    OTP_PROBES,
-    PERSONA_STYLE_TEMPLATES,
-    CASUAL_OPENERS,
-    SLANGS,
-    ABBREVS,
-)
+try:
+    from learning_engine import LearningEngine
+except Exception:
+    LearningEngine = None
 
-from learning_engine import (
-    record_reply,
-    record_scammer_message,
-    feedback_from_turn,
-    phrase_score,
-    strategy_bias,
-)
+logger = logging.getLogger("agent")
+logging.basicConfig(level=logging.INFO)
 
-# ------------------------------------------------------------
-# Regex
-# ------------------------------------------------------------
-NUM_RE = re.compile(r"\b\d{3,}\b")
-OTP_RE = re.compile(r"\b(otp|one time password|pin|password)\b", re.I)
+# ----------------------------
+# Constants
+# ----------------------------
+REPEAT_AVOIDANCE_LIMIT = 6
+MAX_PHASES_PER_MESSAGE = 3
+DEFAULT_REPLY = "ok"
 
+# ----------------------------
+# Utility helpers
+# ----------------------------
+def _normalize(text: str) -> str:
+    return " ".join(text.lower().split())
+
+def _safe_list(x):
+    return x if isinstance(x, list) else []
 
 # ============================================================
-# AGENT CLASS
+# AGENT
 # ============================================================
-
 class Agent:
     def __init__(self, session: Dict[str, Any]):
         self.s = session
-
-        # ---------- persistent memory ----------
-        self.s.setdefault("turns", [])
-        self.s.setdefault("profile", {})
-        self.s.setdefault("memory", [])
-        self.s.setdefault("claims", [])
         self.s.setdefault("recent_responses", set())
-        self.s.setdefault("asked_about", set())
+        self.s.setdefault("phase_history", [])
+        self.s.setdefault("outgoing_count", 0)
 
-        # ---------- persona ----------
-        self.s.setdefault("persona", random.choice(list(PERSONA_STYLE_TEMPLATES.keys())))
-        self.s.setdefault("persona_state", "free")
-        self.s.setdefault("tone_level", 0)  # ramps slowly
-        self.s.setdefault("out_count", 0)
+        self.learner = LearningEngine(self.s) if LearningEngine else None
 
-    # ========================================================
-    # OBSERVE INCOMING MESSAGE
-    # ========================================================
-    def observe(self, msg: str, raw: Optional[dict] = None):
-        msg = (msg or "").strip()
-        ts = time.time()
+    # --------------------------------------------------------
+    # Phase selection logic
+    # --------------------------------------------------------
+    def _select_phases(self, incoming: str) -> List[str]:
+        """
+        Decide which phases to use for a SINGLE reply.
+        This is NOT chatting — this is composing one human message.
+        """
+        phases = []
 
-        self.s["turns"].append({
-            "direction": "in",
-            "text": msg,
-            "ts": ts,
-        })
+        text = incoming.lower()
 
-        record_scammer_message(msg)
+        # Entry logic
+        if self.s["outgoing_count"] == 0:
+            phases.append("casual_entry")
 
-        # ---- extract info ----
-        if NAME_RE.search(msg):
-            self._claim("name", NAME_RE.search(msg).group(1), msg)
+        # Confusion / probing
+        if any(k in text for k in ["what", "why", "how", "who"]):
+            phases.append(random.choice([
+                "confusion",
+                "light_confusion",
+                "probing_identity",
+                "probing_bank",
+                "probing_process"
+            ]))
 
-        if BANK_RE.search(msg):
-            self._claim("bank", BANK_RE.search(msg).group(1).upper(), msg)
+        # Pressure & authority detection
+        if any(k in text for k in ["urgent", "immediately", "blocked", "suspended"]):
+            phases.append(random.choice([
+                "time_pressure",
+                "authority_pressure",
+                "fear_response"
+            ]))
 
-        if PHONE_RE.search(msg):
-            self._claim("phone", PHONE_RE.search(msg).group(0), msg)
+        # Payment / links
+        if any(k in text for k in ["upi", "pay", "transfer", "link", "click"]):
+            phases.append(random.choice([
+                "probing_payment",
+                "probing_links",
+                "technical_confusion"
+            ]))
 
-        if UPI_RE.search(msg):
-            self._claim("upi", UPI_RE.search(msg).group(0), msg)
+        # Late-stage doubt
+        if self.s["outgoing_count"] > 3:
+            phases.append(random.choice([
+                "soft_doubt",
+                "logic_doubt",
+                "verification_loop",
+                "last_minute_doubt"
+            ]))
 
-        for link in detect_links(msg):
-            self._claim("link", link, msg)
+        # Exit trajectory
+        if self.s["outgoing_count"] > 6:
+            phases.append(random.choice([
+                "fatigue",
+                "annoyance",
+                "delay_tactics",
+                "cooldown_state"
+            ]))
 
-        # ---- persona state inference ----
-        lower = msg.lower()
-        if "driving" in lower:
-            self.s["persona_state"] = "driving"
-        elif "at work" in lower:
-            self.s["persona_state"] = "at_work"
-        elif "sleep" in lower:
-            self.s["persona_state"] = "sleeping"
+        # Trim + fallback
+        phases = list(dict.fromkeys(phases))[:MAX_PHASES_PER_MESSAGE]
+        return phases or ["casual_entry"]
 
-    # ========================================================
-    # CLAIM TRACKING (WITH CONTRADICTION DETECTION)
-    # ========================================================
-    def _claim(self, kind: str, value: str, src: str):
-        profile = self.s["profile"]
-        prev = profile.get(kind)
+    # --------------------------------------------------------
+    # Message composition (CORE FEATURE)
+    # --------------------------------------------------------
+    def compose_message(self, phases: List[str]) -> str:
+        """
+        Build ONE long, human-like message by combining phases.
+        """
+        if not vd:
+            return DEFAULT_REPLY
 
-        if prev and prev != value:
-            self.s["memory"].append({
-                "type": "contradiction",
-                "field": kind,
-                "old": prev,
-                "new": value,
-                "ts": time.time(),
-            })
+        parts = []
 
-        profile[kind] = value
-        self.s["claims"].append({
-            "kind": kind,
-            "value": value,
-            "src": src,
-            "ts": time.time(),
-        })
+        for phase in phases:
+            try:
+                if hasattr(vd, "humanize_reply"):
+                    part = vd.humanize_reply(phase)
+                else:
+                    pool = vd.BASE_POOLS.get(phase, [])
+                    part = random.choice(pool) if pool else None
+            except Exception:
+                part = None
 
-    # ========================================================
-    # INTENT DETECTION
-    # ========================================================
-    def detect_intent(self, msg: str) -> str:
-        t = msg.lower()
+            if part:
+                parts.append(part)
 
-        if OTP_RE.search(t):
-            return "otp"
+        if not parts:
+            return DEFAULT_REPLY
 
-        if any(k in t for k in ["transfer", "upi", "account", "pay", "credit"]):
-            return "extraction"
+        # Human spacing / flow
+        message = " ".join(parts)
 
-        if any(k in t for k in ["urgent", "immediately", "blocked", "freeze"]):
-            return "urgency"
+        return message.strip()
 
-        if any(k in t for k in ["manager", "officer", "branch", "department"]):
-            return "authority"
+    # --------------------------------------------------------
+    # Main response method (API CALLS THIS)
+    # --------------------------------------------------------
+    def respond(self, incoming: str, raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        phases = self._select_phases(incoming)
 
-        if any(k in t for k in ["hello", "hi", "hey"]):
-            return "greeting"
+        reply = self.compose_message(phases)
+        norm = _normalize(reply)
 
-        return "neutral"
+        # Repetition guard
+        attempts = 0
+        while norm in self.s["recent_responses"] and attempts < REPEAT_AVOIDANCE_LIMIT:
+            reply = self.compose_message(phases)
+            norm = _normalize(reply)
+            attempts += 1
 
-    # ========================================================
-    # STRATEGY SELECTION (SELF-ADJUSTING)
-    # ========================================================
-    def choose_strategy(self, intent: str) -> str:
-        base = {
-            "greeting": "smalltalk",
-            "neutral": "confusion",
-            "authority": "probe",
-            "urgency": "delay",
-            "extraction": "probe",
-            "otp": "otp_probe",
-        }.get(intent, "probe")
+        self.s["recent_responses"].add(norm)
+        self.s["phase_history"].append(phases)
+        self.s["outgoing_count"] += 1
 
-        bias = strategy_bias(base)
-        if bias < -0.5:
-            return "challenge"
-        if bias > 0.8:
-            return "near_fall"
-
-        return base
-
-    # ========================================================
-    # REPLY GENERATION
-    # ========================================================
-    def generate_reply(self, strategy: str, incoming: str) -> str:
-        persona = self.s["persona"]
-        tone = self.s["tone_level"]
-        recent = self.s["recent_responses"]
-
-        # ---- pool selection ----
-        pool_map = {
-            "smalltalk": CASUAL_OPENERS + SMALL_TALK,
-            "confusion": CONFUSION,
-            "probe": PROBING,
-            "delay": SMALL_TALK,
-            "challenge": RESISTANCE,
-            "near_fall": NEAR_FALL,
-            "fatigue": FATIGUE,
-            "exit": EXIT,
-            "otp_probe": OTP_PROBES,
-        }
-
-        pool = pool_map.get(strategy, PROBING)
-
-        # ---- tone ramping (human pacing) ----
-        if tone < 2:
-            pool = CASUAL_OPENERS + FILLERS + pool[:4]
-        elif tone < 4:
-            pool = pool + SOFT_DOUBT
-        else:
-            pool = pool + RESISTANCE
-
-        # ---- intelligent weighting using learning engine ----
-        scored = sorted(
-            pool,
-            key=lambda p: phrase_score(p),
-            reverse=True
-        )
-
-        # ---- pick non-repeating reply ----
-        reply = sample_no_repeat_varied(
-            scored,
-            recent,
-            session=self.s
-        )
-
-        # ---- slang injection ----
-        if random.random() < 0.15:
-            for k, v in SLANGS.items():
-                if k.lower() in reply.lower():
-                    reply = re.sub(rf"\b{k}\b", random.choice(v), reply, flags=re.I)
-
-        if random.random() < 0.08:
-            reply += " " + random.choice(ABBREVS)
-
-        # ---- state consistency ----
-        if strategy == "delay":
-            state = self.s["persona_state"]
-            if state == "driving":
-                reply += " I'm driving rn."
-            elif state == "at_work":
-                reply += " I'm at work atm."
-
-        # ---- finalize ----
-        self.s["tone_level"] = min(6, tone + 1)
-        self.s["out_count"] += 1
-
-        self.s["turns"].append({
-            "direction": "out",
-            "text": reply,
-            "ts": time.time(),
-        })
-
-        recent.add(_normalize_text(reply))
-
-        # ---- learning feedback ----
-        outcome = feedback_from_turn(self.s["turns"][-6:])
-        record_reply(reply, outcome)
-
-        return reply
-
-    # ========================================================
-    # MAIN ENTRY
-    # ========================================================
-    def respond(self, incoming: str, raw: Optional[dict] = None) -> Dict[str, Any]:
-        self.observe(incoming, raw)
-
-        intent = self.detect_intent(incoming)
-        strategy = self.choose_strategy(intent)
-
-        reply = self.generate_reply(strategy, incoming)
+        # Learning hook (SAFE)
+        if self.learner:
+            try:
+                self.learner.observe(incoming, reply, phases)
+            except Exception:
+                pass
 
         return {
             "reply": reply,
-            "strategy": strategy,
-            "intent": intent,
-            "profile": self.s["profile"],
-            "memory": self.s["memory"][-10:],
-            "claims": self.s["claims"][-10:],
+            "phases_used": phases,
+            "intent": "honeypot_engagement"
         }
