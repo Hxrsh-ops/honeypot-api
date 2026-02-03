@@ -226,6 +226,10 @@ class Agent:
     # --------------------------------------------------------
     def _detect_signals(self, text: str) -> Dict[str, bool]:
         lower = (text or "").lower()
+        social_hit = bool(SOCIAL_IMPERSONATION_RE.search(lower))
+        if social_hit and (BANK_CLAIM_RE.search(lower) or AUTH_RE.search(lower)):
+            social_hit = False
+
         return {
             "otp": bool(OTP_RE.search(lower)),
             "payment": bool(UPI_RE.search(text) or PAY_RE.search(lower)),
@@ -240,7 +244,8 @@ class Agent:
             "punct_complaint": bool(PUNCT_COMPLAINT_RE.search(lower)),
             "identity_claim": bool(IDENTITY_CLAIM_RE.search(lower)),
             "bank_claim": bool(BANK_CLAIM_RE.search(lower)),
-            "social_impersonation": bool(SOCIAL_IMPERSONATION_RE.search(lower)),
+            "social_impersonation": social_hit,
+            "legit_alert": bool(LEGIT_ALERT_RE.search(text or "")),
         }
 
     # --------------------------------------------------------
@@ -396,11 +401,24 @@ class Agent:
                 "if it's frozen how are you messaging",
             ])
 
-        if signals.get("identity_claim") or "i am from" in lower:
+        if signals.get("social_impersonation"):
+            if "boss" in lower or "manager" in lower:
+                return random.choice([
+                    "which project? also call me, why text",
+                    "if you're my boss, tell me the deadline",
+                    "call me from office line, not this",
+                ])
             return random.choice([
-                "which bank exactly, branch and city?",
-                "official email and employee id?",
-                "name and branch? then i'll verify",
+                "call me, this number feels off",
+                "what's our last chat about?",
+                "send a voice note so i know it's you",
+            ])
+
+        if signals.get("payment") and signals.get("urgency"):
+            return random.choice([
+                "why upi if it's urgent? send official email",
+                "this sounds off, no upi for verification",
+                "stop rushing, explain the process",
             ])
 
         if signals.get("payment") and "upi" in lower:
@@ -417,17 +435,11 @@ class Agent:
                 "why a random link?",
             ])
 
-        if signals.get("social_impersonation"):
-            if "boss" in lower or "manager" in lower:
-                return random.choice([
-                    "which project? also call me, why text",
-                    "if you're my boss, tell me the deadline",
-                    "call me from office line, not this",
-                ])
+        if signals.get("identity_claim") or "i am from" in lower:
             return random.choice([
-                "call me, this number feels off",
-                "what's our last chat about?",
-                "send a voice note so i know it's you",
+                "which bank exactly, branch and city?",
+                "official email and employee id?",
+                "name and branch? then i'll verify",
             ])
 
         return None
@@ -592,7 +604,7 @@ class Agent:
         signals = self._detect_signals(incoming)
 
         # legit statement handling
-        if LEGIT_ALERT_RE.search(incoming or ""):
+        if signals.get("legit_alert"):
             reply = random.choice([
                 "ok thanks, i'll check the app",
                 "noted, i'll verify and call bank if needed",
@@ -758,7 +770,7 @@ class Agent:
             score += 0.2
         if signals.get("threat"):
             score += 0.3
-        if LEGIT_ALERT_RE.search(incoming or ""):
+        if signals.get("legit_alert"):
             score = max(0.0, score - 1.5)
         score = min(score, 5.0)
         is_scam = score >= 2.5
