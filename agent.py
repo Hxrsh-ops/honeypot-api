@@ -50,7 +50,7 @@ DEFAULT_REPLY = "ok"
 LLM_USAGE_PROB = float(os.getenv("LLM_USAGE_PROB", "0.10"))
 
 OTP_RE = re.compile(r"\b(otp|one[-\s]?time\s?password|verification\s?code)\b", re.I)
-URGENT_RE = re.compile(r"\b(urgent|immediate|within|expire|freeze|blocked|suspend|suspension)\b", re.I)
+URGENT_RE = re.compile(r"\b(urgent|immediate|within|expire|freez|frozen|blocked|suspend|suspension)\b", re.I)
 AUTH_RE = re.compile(r"\b(bank|rbi|world\s?bank|sbi|hdfc|icici|axis|fraud|security|official|manager)\b", re.I)
 PAY_RE = re.compile(r"\b(upi|transfer|pay|payment|refund|charge|fee|ifsc|account|beneficiary)\b", re.I)
 THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|court)\b", re.I)
@@ -61,6 +61,7 @@ REPEAT_COMPLAINT_RE = re.compile(r"(already told you|told you already|how many t
 PUNCT_COMPLAINT_RE = re.compile(r"(question mark|qn mark|\?\s*all the time|why .* \?)", re.I)
 IDENTITY_CLAIM_RE = re.compile(r"\b(i am|this is|i'm)\b", re.I)
 BANK_CLAIM_RE = re.compile(r"\bbank\b", re.I)
+LEGIT_ALERT_RE = re.compile(r"(transaction of|debited|credited|statement is ready|if not initiated|call (us|bank))", re.I)
 
 CASUAL_PREFIX = [
     "hmm",
@@ -569,6 +570,16 @@ class Agent:
             self._record_incoming(incoming)
         signals = self._detect_signals(incoming)
 
+        # legit statement handling
+        if LEGIT_ALERT_RE.search(incoming or ""):
+            reply = random.choice([
+                "ok thanks, i'll check the app",
+                "noted, i'll verify and call bank if needed",
+                "ok, i'll check my statement later",
+            ])
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["polite_engagement"], "legit", signals)
+
         # OTP refusal after first request
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) >= 2:
             reply = random.choice(OTP_WARNINGS)
@@ -721,6 +732,8 @@ class Agent:
             score += 0.2
         if signals.get("threat"):
             score += 0.3
+        if LEGIT_ALERT_RE.search(incoming or ""):
+            score = max(0.0, score - 1.5)
         score = min(score, 5.0)
         is_scam = score >= 2.5
         legit_score = max(0.0, 1 - (score / 5.0))

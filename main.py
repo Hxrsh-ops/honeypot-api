@@ -32,6 +32,7 @@ API_KEY = os.getenv("HONEYPOT_API_KEY", "")
 MAX_TURNS = int(os.getenv("MAX_TURNS", "60"))
 HUMAN_DELAY_MIN = float(os.getenv("DELAY_MIN", "0.4"))
 HUMAN_DELAY_MAX = float(os.getenv("DELAY_MAX", "1.6"))
+BUILD_ID = os.getenv("RAILWAY_GIT_COMMIT_SHA", os.getenv("BUILD_ID", "dev"))
 
 # ------------------------------------------------------------
 # LOGGING
@@ -108,6 +109,7 @@ async def root():
     return JSONResponse({
         "status": "alive",
         "service": "honeypot",
+        "build_id": BUILD_ID,
         "ts": time.time()
     })
 
@@ -232,6 +234,7 @@ async def honeypot(request: Request):
             "scam_score": output.get("scam_score"),
             "legit_score": output.get("legit_score"),
             "is_scam": output.get("is_scam"),
+            "build_id": BUILD_ID,
             "ts": time.time()
         })
 
