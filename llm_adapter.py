@@ -40,6 +40,44 @@ def generate_reply_with_llm(
     if USE_LLM != "1" or not OPENAI_API_KEY or OpenAI is None:
         return None
 
+
+def rephrase_with_llm(text: str) -> Optional[str]:
+    """
+    Low-risk paraphrase helper. Keeps meaning, short length.
+    """
+    if USE_LLM != "1" or not OPENAI_API_KEY or OpenAI is None:
+        return None
+    if not text:
+        return None
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Paraphrase the user's message in casual texting style. "
+                    "Keep the same meaning. Do not add new facts. "
+                    "Keep it short (1-2 clauses)."
+                ),
+            },
+            {
+                "role": "user",
+                "content": text,
+            },
+        ]
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            timeout=LLM_TIMEOUT,
+            temperature=0.7,
+            max_tokens=80,
+        )
+        out = resp.choices[0].message.content.strip()
+        return redact_sensitive(out)
+    except Exception as e:
+        logger.exception("LLM rephrase failure: %s", e)
+        return None
+
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
 

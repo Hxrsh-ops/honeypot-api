@@ -112,6 +112,39 @@ def learn_from_session(session: Dict[str, Any]):
 
 
 # ============================================================
+# COMPAT LAYER (CLASS + ALIAS)
+# ============================================================
+
+class LearningEngine:
+    """
+    Thin wrapper used by agent.py to keep API stable.
+    """
+    def __init__(self, session: Dict[str, Any] = None):
+        self.session = session or {}
+
+    def observe(
+        self,
+        incoming: str,
+        reply: str,
+        phases: List[str],
+        extracted: Dict[str, Any] = None,
+        outcome: str = "unknown",
+        intent: str = "honeypot_engagement",
+        strategy: str = ""
+    ):
+        learn_from_turn(
+            intent=intent,
+            strategy=strategy or (phases[0] if phases else ""),
+            incoming=incoming,
+            extracted=extracted or {},
+            outcome=outcome
+        )
+
+    def finalize_session(self, session: Dict[str, Any] = None):
+        learn_from_session(session or self.session or {})
+
+
+# ============================================================
 # STRATEGY SCORING
 # ============================================================
 def get_best_strategies(limit: int = 5) -> List[str]:
@@ -181,6 +214,11 @@ def _cap_state_size():
 
     if len(STATE["session_lengths"]) > 5000:
         STATE["session_lengths"] = STATE["session_lengths"][-3000:]
+
+
+# Backwards-compat alias for older ingestion code
+def learn_from_conversation(session: Dict[str, Any]):
+    learn_from_session(session)
 
 
 # ============================================================

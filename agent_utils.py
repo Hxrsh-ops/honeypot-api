@@ -100,6 +100,26 @@ def _normalize_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
+
+def normalize_text(text: str) -> str:
+    """
+    Public wrapper for normalization.
+    Safe for external imports.
+    """
+    return _normalize_text(text)
+
+
+def fingerprint_text(text: str) -> str:
+    """
+    Normalize + remove digits to build a repeat-resistant fingerprint.
+    """
+    if not text:
+        return ""
+    text = _normalize_text(text)
+    text = re.sub(r"\d+", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
 # ============================================================
 # LINK DETECTOR
 # ============================================================
@@ -122,21 +142,19 @@ def sample_no_repeat(pool, recent_set, max_attempts=30):
     if not pool:
         return ""
 
-    normalized_recent = set(_normalize_text(x) for x in recent_set)
+    normalized_recent = set(_normalize_text(x) for x in _iter_recent(recent_set))
 
     for _ in range(max_attempts):
         choice = random.choice(pool)
         norm = _normalize_text(choice)
         if norm not in normalized_recent:
-            recent_set.add(norm)
-            _trim_recent(recent_set)
+            _add_recent(recent_set, norm)
             return choice
 
     # fallback: force variation
     base = random.choice(pool)
     variant = _force_variation(base)
-    recent_set.add(_normalize_text(variant))
-    _trim_recent(recent_set)
+    _add_recent(recent_set, _normalize_text(variant))
     return variant
 
 # ============================================================
@@ -153,14 +171,13 @@ def sample_no_repeat_varied(
     if not pool:
         return ""
 
-    normalized_recent = set(_normalize_text(x) for x in recent_set)
+    normalized_recent = set(_normalize_text(x) for x in _iter_recent(recent_set))
 
     # try raw choices first
     for _ in range(max_attempts):
         base = random.choice(pool)
         if _normalize_text(base) not in normalized_recent:
-            recent_set.add(_normalize_text(base))
-            _trim_recent(recent_set)
+            _add_recent(recent_set, _normalize_text(base))
             return base
 
     # try LLM / hook
@@ -169,8 +186,7 @@ def sample_no_repeat_varied(
             base = random.choice(pool)
             out = rephrase_hook(base)
             if out and _normalize_text(out) not in normalized_recent:
-                recent_set.add(_normalize_text(out))
-                _trim_recent(recent_set)
+                _add_recent(recent_set, _normalize_text(out))
                 return out
         except Exception:
             pass
@@ -180,14 +196,12 @@ def sample_no_repeat_varied(
     for _ in range(10):
         variant = _force_variation(base)
         if _normalize_text(variant) not in normalized_recent:
-            recent_set.add(_normalize_text(variant))
-            _trim_recent(recent_set)
+            _add_recent(recent_set, _normalize_text(variant))
             return variant
 
     # absolute fallback
     fallback = base + random.choice([" pls", " ok?", " …", " — confirm"])
-    recent_set.add(_normalize_text(fallback))
-    _trim_recent(recent_set)
+    _add_recent(recent_set, _normalize_text(fallback))
     return fallback
 
 # ============================================================
@@ -225,10 +239,80 @@ def _force_variation(text: str) -> str:
 
 def _trim_recent(recent_set, limit=500):
     try:
-        while len(recent_set) > limit:
-            recent_set.pop()
+        if isinstance(recent_set, list):
+            while len(recent_set) > limit:
+                recent_set.pop(0)
+        else:
+            while len(recent_set) > limit:
+                recent_set.pop()
     except Exception:
         pass
+
+
+def _iter_recent(recent_set):
+    if isinstance(recent_set, list):
+        return recent_set
+    if isinstance(recent_set, set):
+        return list(recent_set)
+    return []
+
+
+def _add_recent(recent_set, value: str):
+    try:
+        if isinstance(recent_set, list):
+            recent_set.append(value)
+            _trim_recent(recent_set)
+        else:
+            recent_set.add(value)
+            _trim_recent(recent_set)
+    except Exception:
+        pass
+
+# ============================================================
+# SCAM SIGNAL + COMPLEXITY (LIGHTWEIGHT)
+# ============================================================
+
+_OTP_RE = re.compile(r"\b(otp|one[-\s]?time\s?password|verification\s?code)\b", re.I)
+_URGENT_RE = re.compile(r"\b(urgent|immediate|within|expire|freeze|blocked|suspend|suspension|last\s?chance)\b", re.I)
+_AUTH_RE = re.compile(r"\b(bank|rbi|world\s?bank|sbi|hdfc|icici|axis|fraud|security|official|manager)\b", re.I)
+_PAY_RE = re.compile(r"\b(upi|transfer|pay|payment|refund|charge|fee|ifsc|account|beneficiary)\b", re.I)
+_THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|court)\b", re.I)
+
+
+def scam_signal_score(text: str) -> float:
+    """
+    Returns a 0-5 score based on common scam signals.
+    """
+    if not text:
+        return 0.0
+    score = 0.0
+    if URL_RE.search(text):
+        score += 1.0
+    if _OTP_RE.search(text):
+        score += 1.5
+    if UPI_RE.search(text) or _PAY_RE.search(text):
+        score += 1.0
+    if _URGENT_RE.search(text):
+        score += 0.8
+    if _AUTH_RE.search(text):
+        score += 0.6
+    if _THREAT_RE.search(text):
+        score += 0.8
+    return min(score, 5.0)
+
+
+def classify_message_complexity(text: str) -> str:
+    """
+    Rough complexity for logging/learning.
+    """
+    if not text:
+        return "empty"
+    length = len(text)
+    if length < 40:
+        return "short"
+    if length < 120:
+        return "medium"
+    return "long"
 
 # ============================================================
 # REDACTION (LOG SAFETY)

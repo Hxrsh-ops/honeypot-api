@@ -55,6 +55,8 @@ app = FastAPI(
 # (Swap to Redis later if needed)
 # ------------------------------------------------------------
 SESSIONS: Dict[str, Dict[str, Any]] = {}
+# compat export for tests
+sessions = SESSIONS
 
 
 # ============================================================
@@ -76,6 +78,23 @@ def cleanup_session(session_id: str):
             persist_learning_snapshot()
         except Exception:
             pass
+
+
+def build_session_summary(session: Dict[str, Any]) -> Dict[str, Any]:
+    extract = session.get("extracted_profile", {}) or {}
+    if "name" not in extract:
+        extract["name"] = None
+    if "bank" not in extract:
+        extract["bank"] = None
+    return {
+        "extract": extract,
+        "stats": {
+            "turns": len(session.get("turns", [])),
+            "created": session.get("created"),
+            "last_seen": session.get("last_seen"),
+        },
+        "memory_count": len(session.get("memory", [])),
+    }
 
 
 # ============================================================
@@ -148,6 +167,7 @@ async def honeypot(request: Request):
 
         session = get_session(session_id)
         session["last_seen"] = time.time()
+        session.setdefault("turns", [])
 
         # ----------------------------------------------------
         # TURN LIMIT SAFETY
@@ -164,6 +184,13 @@ async def honeypot(request: Request):
         # AGENT EXECUTION (ISOLATED)
         # ----------------------------------------------------
         agent = Agent(session)
+        # store incoming turn
+        session["turns"].append({
+            "speaker": "scammer",
+            "text": incoming,
+            "ts": time.time()
+        })
+
         output = await asyncio.to_thread(
             agent.respond,
             incoming,
@@ -180,6 +207,15 @@ async def honeypot(request: Request):
             random.uniform(HUMAN_DELAY_MIN, HUMAN_DELAY_MAX)
         )
 
+        # store outgoing turn
+        session["turns"].append({
+            "speaker": "bot",
+            "text": reply,
+            "ts": time.time(),
+            "phases": output.get("phases_used"),
+            "strategy": output.get("strategy"),
+        })
+
         # ----------------------------------------------------
         # RESPONSE (HACKATHON SAFE)
         # ----------------------------------------------------
@@ -188,9 +224,14 @@ async def honeypot(request: Request):
             "session_id": session_id,
             "intent": output.get("intent"),
             "strategy": output.get("strategy"),
-            "profile": output.get("profile"),
+            "phases_used": output.get("phases_used"),
+            "signals": output.get("signals"),
+            "extracted_profile": output.get("extracted_profile"),
             "claims": output.get("claims"),
             "memory": output.get("memory"),
+            "scam_score": output.get("scam_score"),
+            "legit_score": output.get("legit_score"),
+            "is_scam": output.get("is_scam"),
             "ts": time.time()
         })
 
@@ -219,6 +260,8 @@ async def inspect_session(session_id: str):
     for k, v in sess.items():
         if k == "turns":
             safe["turns_preview"] = v[-10:]
+        elif k == "recent_responses" and isinstance(v, set):
+            safe[k] = list(v)
         else:
             safe[k] = v
 
@@ -226,6 +269,18 @@ async def inspect_session(session_id: str):
         "session_id": session_id,
         "session": safe
     })
+
+
+# ============================================================
+# SESSION SUMMARY (JUDGES / TESTS)
+# ============================================================
+@app.get("/sessions/{session_id}/summary")
+async def session_summary(session_id: str):
+    sess = SESSIONS.get(session_id)
+    if not sess:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    summary = build_session_summary(sess)
+    return JSONResponse({"summary": summary})
 
 
 # ============================================================
