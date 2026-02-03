@@ -8,7 +8,7 @@ import argparse
 from urllib.parse import urlparse
 
 # use local default for testing/development
-API_URL = os.getenv("HONEYPOT_URL", "http://web-production-ae3d7.up.railway.app/honeypot")
+API_URL = os.getenv("HONEYPOT_URL", "https://web-production-ae3d7.up.railway.app/honeypot")
 API_KEY = os.getenv("HONEYPOT_API_KEY", "")
 AUTOSTART = os.getenv("AUTOSTART_SERVER", "1")  # set to "0" to disable auto-start
 

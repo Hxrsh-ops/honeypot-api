@@ -62,6 +62,7 @@ PUNCT_COMPLAINT_RE = re.compile(r"(question mark|qn mark|\?\s*all the time|why .
 IDENTITY_CLAIM_RE = re.compile(r"\b(i am|this is|i'm)\b", re.I)
 BANK_CLAIM_RE = re.compile(r"\bbank\b", re.I)
 LEGIT_ALERT_RE = re.compile(r"(transaction of|debited|credited|statement is ready|if not initiated|call (us|bank))", re.I)
+SOCIAL_IMPERSONATION_RE = re.compile(r"\b(mom|dad|mother|father|cousin|bro|brother|sis|sister|uncle|aunt|aunty|wife|husband|son|daughter|boss|manager|colleague|friend)\b", re.I)
 
 CASUAL_PREFIX = [
     "hmm",
@@ -80,6 +81,12 @@ OTP_WARNINGS = [
     "no otp. i'll call the bank",
     "cant share verification code",
     "otp stays with me",
+]
+
+OTP_PROBES = [
+    "why otp? bank never asks that",
+    "otp for what? send official email",
+    "not sharing otp, verify another way",
 ]
 
 ESCALATION_PROBES = [
@@ -233,6 +240,7 @@ class Agent:
             "punct_complaint": bool(PUNCT_COMPLAINT_RE.search(lower)),
             "identity_claim": bool(IDENTITY_CLAIM_RE.search(lower)),
             "bank_claim": bool(BANK_CLAIM_RE.search(lower)),
+            "social_impersonation": bool(SOCIAL_IMPERSONATION_RE.search(lower)),
         }
 
     # --------------------------------------------------------
@@ -409,6 +417,19 @@ class Agent:
                 "why a random link?",
             ])
 
+        if signals.get("social_impersonation"):
+            if "boss" in lower or "manager" in lower:
+                return random.choice([
+                    "which project? also call me, why text",
+                    "if you're my boss, tell me the deadline",
+                    "call me from office line, not this",
+                ])
+            return random.choice([
+                "call me, this number feels off",
+                "what's our last chat about?",
+                "send a voice note so i know it's you",
+            ])
+
         return None
 
     # --------------------------------------------------------
@@ -581,6 +602,11 @@ class Agent:
             return self._finalize_reply(reply, ["polite_engagement"], "legit", signals)
 
         # OTP refusal after first request
+        if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
+            reply = random.choice(OTP_PROBES)
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["probing_identity"], "otp_probe", signals)
+
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) >= 2:
             reply = random.choice(OTP_WARNINGS)
             reply = self._style_scrubber(reply)
