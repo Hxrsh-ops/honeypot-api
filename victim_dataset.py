@@ -1,401 +1,379 @@
-# ==========================================
-# SUPER HUMAN VICTIM DATASET (EXTENDED, STYLES + SCENARIOS)
-# ==========================================
+# ============================================================
+# VICTIM DATASET v5.0 — SUPER FANTASTIC AWESOME EDITION
+# Large + Human + Generative + Expandable
+# ============================================================
+
 import random
-# BANK NAMES / DOMAINS (used for legitimacy heuristics)
-BANKS = [
-    "sbi", "hdfc", "icici", "axis", "canara", "pnb", "bob", "idbi", "kotak",
-    "yesbank", "indusind", "ubi", "unionbank", "bandhan", "citi", "hsbc"
-]
-BANK_DOMAINS = ["sbi.co.in", "hdfcbank.com", "icicibank.com", "axisbank.com", "canarabank.com"]
 
-# Legit patterns that often indicate official messages
-LEGIT_PATTERNS = [
-    "dear customer", "transaction of", "credited to your account", "debit alert",
-    "if not initiated by you", "for assistance call", "toll free", "thank you for banking with",
-    "regards", "sincerely", "customer id", "account number ending"
-]
-
-# OTP and safety reminders (bot should use these when asked for OTP)
-OTP_WARNINGS = [
-    "I never share OTPs. If this is about my account I'll call the bank directly.",
-    "I won't provide any OTP or password. Please confirm this is from the bank.",
-    "I don't share any verification codes. I'll call the bank's official number instead."
-]
-
-# OTP probes: varied ways a cautious human asks for verification instead of sharing codes
-OTP_PROBES = [
-    "Why do you need the OTP? Please share your designation and extension for verification.",
-    "I'm careful with codes—can you share a branch phone or official ticket ID so I can call?",
-    "Who am I speaking with exactly? Please provide your employee ID and branch so I can verify.",
-    "Can you share an official contact or ticket ID? I won't share OTP otherwise.",
-    "Why OTP though? Please give me a branch number or ticket/reference so I can confirm.",
-    "hmm, why OTP? pls provide your designation and a contact number so I can verify.",
-    "pls share your employee id and branch phone, I need to call them — I won’t share OTP without that."
-]
-
-# ---- Neutral / filler / real-human chatter ----
-FILLERS = [
-    "hmm", "uh", "uhh", "eh", "ooh", "okay", "wait", "one sec", "gimme a sec", "hold up", "alright",
-    "yeah", "ya", "huh", "hmm okay", "right", "fine",
-    "ok then", "hmm right", "yeah okay", "alright then",
-    "got it", "okay sure", "hmm noted", "alright fine",
-    "mm hmm", "bear with me", "let me see", "one moment", "brb", "lemme check"
+# ============================================================
+# 1. CONVERSATION PHASES (DO NOT REMOVE — ONLY ADD)
+# ============================================================
+PHASES = [
+    "casual_entry",
+    "friendly_entry",
+    "confusion",
+    "light_confusion",
+    "polite_engagement",
+    "cooperative",
+    "curious",
+    "probing_identity",
+    "probing_bank",
+    "probing_process",
+    "probing_payment",
+    "probing_links",
+    "emotional_drift",
+    "fear_response",
+    "near_fall",
+    "partial_trust",
+    "soft_doubt",
+    "logic_doubt",
+    "resistance",
+    "strong_resistance",
+    "fatigue",
+    "annoyance",
+    "threatened_exit",
+    "final_exit",
+    "post_exit"
 ]
 
-# ---- Small talk choices ----
-SMALL_TALK = [
-    "I’m in the middle of something right now",
-    "I just stepped out actually",
-    "can we be quick?",
-    "I’m a bit busy",
-    "I’m outside, signal is weak",
-    "I just got free",
-    "I’m at work right now",
-    "I’m driving actually",
-    "I’m with someone right now",
-    "I was about to sleep",
-    "I just woke up",
-    "I’m not near my phone all the time",
-    "Ah okay, hang on a sec",
-    "Sorry, I have a meeting"
-]
+# ============================================================
+# 2. CORE HUMAN TEXT POOLS (BIG & REAL)
+# ============================================================
 
-# ---- First contact / confusion ----
-CONFUSION = [
-    "sorry, who is this?",
-    "I don’t recognize this number",
-    "what is this regarding?",
-    "I’m not sure why you’re messaging me",
-    "can you explain properly?",
-    "I don’t remember any issue",
-    "what exactly happened?",
-    "I just saw this now",
-    "why am I getting this message?",
-    "this is the first I’m hearing of this",
-    "what problem are you talking about?",
-    "can you explain clearly?",
-    "I don’t understand what this is about",
-    "why are you contacting me?",
-    "what account is this about?"
-]
+BASE_POOLS = {
 
-# ---- Acknowledging identity / name / role ----
-INTRO_ACK = [
-    "okay",
-    "alright",
-    "noted",
-    "okay got it",
-    "fine",
-    "hmm okay",
-    "right",
-    "okay, go on",
-    "alright, continue",
-    "okay understood",
-    "please give details",
-    "who am I talking to exactly?"
-]
+    # ---- Entry / Casual ----
+    "casual_entry": [
+        "hi",
+        "hello",
+        "hey",
+        "who's this?",
+        "who is this?",
+        "what is this about?",
+        "just saw this message",
+        "missed call?",
+        "why am I getting this?",
+        "can you explain?",
+        "what happened?",
+        "uhh?",
+        "??",
+        "hello?",
+        "hi, yes?"
+    ],
 
-# ---- Bank & authority probing ----
-BANK_VERIFICATION = [
-    "which bank exactly?",
-    "which branch are you calling from?",
-    "is this my home branch?",
-    "what city is this branch in?",
-    "what department is this?",
-    "can you share your designation?",
-    "who is the branch manager there?",
-    "do you have an employee ID?",
-    "is this from head office or branch?",
-    "why is this handled centrally?",
-    "is this customer care or branch side?",
-    "what extension are you calling from?",
-    "please provide a formal email or ID",
-    "can you give me your employee ID or name so I can verify?"
-]
+    "friendly_entry": [
+        "hi, how can I help?",
+        "hello, what’s this regarding?",
+        "okay, go on",
+        "yes, tell me",
+        "hmm, what is this about?",
+        "I just opened my phone",
+        "sorry, I was busy earlier",
+        "hi, I’m listening"
+    ],
 
-# ---- Soft cooperation (appears normal) ----
-COOPERATIVE = [
-    "okay, what should I do now?",
-    "alright, tell me the steps",
-    "okay, please explain",
-    "what needs to be done?",
-    "okay, guide me",
-    "how do I resolve this?",
-    "what exactly is required?",
-    "okay, go ahead",
-    "please explain clearly",
-    "tell me the process",
-    "okay, I’m listening",
-    "I can try that, but I'm careful with any payment"
-]
+    # ---- Confusion ----
+    "confusion": [
+        "I don’t remember anything like this",
+        "nothing shows in my bank app",
+        "I didn’t get any notification",
+        "this is confusing",
+        "I’m not sure what you mean",
+        "can you explain clearly?",
+        "what account is this about?",
+        "I don’t see any issue on my side",
+        "this is the first time I’m hearing this",
+        "I just checked, nothing is there",
+        "I don’t understand what went wrong"
+    ],
 
-# ---- Near-fall (looks convinced) ----
-NEAR_FALL = [
-    "okay, I don’t want any issues",
-    "I’m getting worried now",
-    "please make sure this fixes it",
-    "okay, tell me carefully",
-    "I just want this resolved",
-    "I can’t afford problems right now",
-    "okay, I’ll do what you say",
-    "just guide me properly",
-    "I hope this works",
-    "okay, don’t mess this up"
-]
+    "light_confusion": [
+        "hmm, not sure",
+        "I don’t think so",
+        "are you sure?",
+        "this feels new to me",
+        "I haven’t faced this before",
+        "I’m a bit lost here",
+        "can you explain once again?"
+    ],
 
-# ---- Probing (INTEL EXTRACTION) ----
-PROBING = [
-    "where exactly should I do this?",
-    "can you resend the details?",
-    "is this UPI or bank transfer?",
-    "what account should it go to?",
-    "can you send the link again?",
-    "what reference should I mention?",
-    "is there a complaint ID?",
-    "what is the ticket number?",
-    "can you share the exact account details?",
-    "who is the beneficiary?",
-    "what name should I enter there?",
-    "can you write the exact UPI ID again?",
-    "what bank is the beneficiary with?",
-    "please show me the account number in full",
-    "do you have a transaction reference or virtual ID?",
-    "what's the IFSC?"
-]
+    # ---- Cooperation ----
+    "polite_engagement": [
+        "okay, please explain",
+        "alright, go ahead",
+        "okay, tell me slowly",
+        "fine, what do I need to do?",
+        "yes, please tell me",
+        "okay, continue",
+        "I’m listening, explain properly"
+    ],
 
-# ---- Soft doubt (human hesitation) ----
-SOFT_DOUBT = [
-    "this sounds a bit unusual",
-    "I didn’t get any notification though",
-    "usually the app informs me",
-    "this hasn’t happened before",
-    "something feels different",
-    "I’m not fully convinced",
-    "are you sure about this?",
-    "this is confusing me",
-    "can you confirm once again?",
-    "this doesn’t sound normal",
-    "I want to verify that on my bank app first"
-]
+    "cooperative": [
+        "okay, what should I do now?",
+        "tell me the steps",
+        "alright, explain step by step",
+        "okay, guide me",
+        "what exactly needs to be done?",
+        "how do I fix this?",
+        "okay, I’ll follow",
+        "please explain clearly"
+    ],
 
-# ---- Resistance (after contradictions) ----
-RESISTANCE = [
-    "this doesn’t match what you said earlier",
-    "you mentioned something different before",
-    "you’re changing details now",
-    "this is inconsistent",
-    "something is off",
-    "this isn’t adding up",
-    "I’m getting more confused",
-    "this feels wrong now",
-    "why are the details changing?",
-    "this is not clear at all",
-    "I’ll need written proof or an official mail"
-]
+    "curious": [
+        "why did this happen?",
+        "how did this issue come?",
+        "what caused this?",
+        "is this common?",
+        "has this happened before?",
+        "why am I affected?",
+        "how serious is this?"
+    ],
 
-# ---- Fatigue / annoyance ----
-FATIGUE = [
-    "you keep repeating the same thing",
-    "this is going in circles",
-    "you’re not answering my questions",
-    "why are you avoiding my questions?",
-    "this is getting frustrating",
-    "please be clear",
-    "you’re not explaining properly",
-    "this is tiring honestly",
-    "stop repeating yourself"
-]
+    # ---- Probing Identity ----
+    "probing_identity": [
+        "who am I speaking with?",
+        "what is your name?",
+        "can you share your full name?",
+        "what is your designation?",
+        "which department is this?",
+        "are you from branch or customer care?",
+        "who authorized this process?",
+        "how do I verify you?",
+        "do you have an employee ID?",
+        "who is your reporting manager?"
+    ],
 
-# ---- Exit / disengage ----
-EXIT = [
-    "I’ll check this directly with the bank",
-    "I’ll visit the branch instead",
-    "I’ll call customer care myself",
-    "I don’t want to continue this",
-    "I’ll verify this independently",
-    "I’m stopping this conversation",
-    "I don’t trust this anymore",
-    "I’m ending this here",
-    "I’ll handle this offline",
-    "Please stop contacting me"
-]
+    # ---- Probing Bank ----
+    "probing_bank": [
+        "which bank is this?",
+        "which branch are you calling from?",
+        "what city branch?",
+        "is this my home branch?",
+        "is this head office?",
+        "why is this handled centrally?",
+        "can you tell branch address?",
+        "who is the branch manager?"
+    ],
 
-# ---- OTP / security focused replies ----
-SECURITY_REPLIES = [
-    "I will not share any OTP or passwords.",
-    "No one should ask for my OTP. I will call the bank's official number.",
-    "I keep my OTP private. Please send official communication if needed."
-]
+    # ---- Probing Process ----
+    "probing_process": [
+        "what is the exact process?",
+        "how long will this take?",
+        "what happens after this?",
+        "is this reversible?",
+        "will I get confirmation?",
+        "what if this fails?",
+        "is there an alternative way?",
+        "can I do this from app?"
+    ],
 
-# ---- Persona styles (decoy personality flavours) ----
-PERSONA_STYLE_KEYS = ["confused", "cooperative", "cautious", "nearly_convinced", "frustrated"]
-PERSONA_STYLE_TEMPLATES = {
-    "confused": CONFUSION + ["who is this? please explain properly", "I’m not sure what you mean, can you elaborate?"],
-    "cooperative": COOPERATIVE + ["okay, I’m listening — step by step please"],
-    "cautious": SOFT_DOUBT + SECURITY_REPLIES,
-    "nearly_convinced": NEAR_FALL + ["I really want this sorted out quickly"],
-    "frustrated": FATIGUE + RESISTANCE
+    # ---- Probing Payment ----
+    "probing_payment": [
+        "is this UPI or bank transfer?",
+        "what account should I send to?",
+        "who is the beneficiary?",
+        "what name should I enter?",
+        "what IFSC should I use?",
+        "can you send details again?",
+        "is there a reference number?",
+        "should I add any remark?"
+    ],
+
+    # ---- Probing Links ----
+    "probing_links": [
+        "the link isn’t opening",
+        "can you resend the link?",
+        "this link looks different",
+        "is this an official site?",
+        "why does the link look strange?",
+        "should I install something?",
+        "my phone is warning me about this link"
+    ],
+
+    # ---- Emotional Drift ----
+    "emotional_drift": [
+        "this is stressing me out",
+        "I’m getting worried now",
+        "I don’t want any trouble",
+        "this is making me anxious",
+        "I’m scared something bad will happen",
+        "I can’t afford issues right now"
+    ],
+
+    "fear_response": [
+        "will my account get blocked?",
+        "will I lose money?",
+        "is my balance safe?",
+        "what if I don’t do this?",
+        "how urgent is this really?",
+        "what happens if I delay?"
+    ],
+
+    # ---- Near Fall ----
+    "near_fall": [
+        "okay, I trust you",
+        "please make sure this works",
+        "I don’t want problems",
+        "just help me fix this",
+        "okay, tell me carefully",
+        "I’ll do what you say",
+        "please don’t mess this up"
+    ],
+
+    "partial_trust": [
+        "okay, I believe you",
+        "you sound genuine",
+        "this seems official",
+        "okay, let’s do this",
+        "I hope this is legit"
+    ],
+
+    # ---- Doubt ----
+    "soft_doubt": [
+        "this sounds a bit unusual",
+        "I didn’t get any official alert",
+        "normally the app informs me",
+        "this feels different",
+        "I want to double check",
+        "are you sure about this?"
+    ],
+
+    "logic_doubt": [
+        "why didn’t the app notify me?",
+        "why are details changing?",
+        "this doesn’t make sense",
+        "banks usually don’t do this",
+        "this process seems odd"
+    ],
+
+    # ---- Resistance ----
+    "resistance": [
+        "this doesn’t match what you said earlier",
+        "you mentioned something different before",
+        "details are changing now",
+        "this is inconsistent",
+        "something feels off",
+        "this isn’t adding up"
+    ],
+
+    "strong_resistance": [
+        "I’m not comfortable continuing",
+        "I don’t trust this anymore",
+        "this feels like a scam now",
+        "I won’t proceed like this",
+        "I need official confirmation"
+    ],
+
+    # ---- Fatigue ----
+    "fatigue": [
+        "you keep repeating the same thing",
+        "this is going in circles",
+        "you’re not answering my questions",
+        "this is getting frustrating",
+        "please be clear",
+        "this is tiring honestly"
+    ],
+
+    "annoyance": [
+        "stop messaging me like this",
+        "why are you pushing so much?",
+        "this is annoying now",
+        "don’t rush me",
+        "give proper answers"
+    ],
+
+    # ---- Exit ----
+    "threatened_exit": [
+        "I’ll check this directly with the bank",
+        "I’ll call customer care myself",
+        "I’ll visit the branch",
+        "I’m not proceeding online"
+    ],
+
+    "final_exit": [
+        "I’m ending this conversation",
+        "do not contact me again",
+        "I’m blocking this number",
+        "this conversation is over",
+        "stop messaging me"
+    ],
+
+    "post_exit": [
+        "any further messages will be reported",
+        "this is your final warning",
+        "I’ve already informed the bank",
+        "do not message again"
+    ]
 }
 
-# Expand dataset with scenario-based replies for common scam flows
-# Example scenarios: KYC/Verification scams, Fake refunds, Payment collection, OTP tricking, Phishing links, Authority impersonation
+# ============================================================
+# 3. SLANG / SHORT FORMS (VERY IMPORTANT FOR HUMAN FEEL)
+# ============================================================
 
-# ---- KYC / Document requests ----
-KYC_SCENARIOS = [
-    "please send a scanned copy of your ID",
-    "we need your PAN and Aadhaar for verification",
-    "upload a photo and sign the document at this link",
-    "please fill out this KYC form at http://..."
-] + PROBING + BANK_VERIFICATION
-
-# ---- Fake refunds / deposit scams ----
-REFUND_SCENARIOS = [
-    "We have a pending refund of Rs. 10,000 to your account, please provide account details",
-    "A duplicate transaction was detected; share your UPI to credit the refund",
-    "We need to confirm beneficiary details to release the refund"
-] + PROBING + SOFT_DOUBT
-
-# ---- Payment / transfer collection attempts ----
-COLLECTION_SCENARIOS = [
-    "You must pay tax or fee to release your account",
-    "Please transfer Rs. XXXX to confirm your identity",
-    "Pay through the link to avoid account suspension"
-] + PROBING + RESISTANCE
-
-# ---- Phishing link messages ----
-PHISHING_LINKS = [
-    "Click this link to verify: http://phish.example/verify",
-    "Open this attachment and complete verification",
-    "Install this app to proceed: http://app.example/install"
-] + PROBING
-
-# ---- Authority impersonation (manager/ico/customer care) ----
-AUTHORITY_SCENARIOS = [
-    "I am the branch manager, this is urgent",
-    "This is a system alert from fraud control, act now",
-    "This is customer care, we require immediate verification",
-    "This is from the head office — share your details for enforcement"
-] + BANK_VERIFICATION + RESISTANCE
-
-# ---- Additional small probes and clarifications ----
-EXTRA_PROBES = [
-    "Can you send your employee ID and extension?",
-    "What is the transaction reference?",
-    "Is there a complaint ID or ticket number?",
-    "Which bank and branch should I contact?",
-    "What exact amount and purpose should I enter in transfer?"
-]
-
-# Combine and export common pools
-PROBING = list(dict.fromkeys(PROBING + EXTRA_PROBES + ["Please provide exact beneficiary name and account."]))
-BANK_VERIFICATION = list(dict.fromkeys(BANK_VERIFICATION))
-COOPERATIVE = list(dict.fromkeys(COOPERATIVE))
-SOFT_DOUBT = list(dict.fromkeys(SOFT_DOUBT))
-RESISTANCE = list(dict.fromkeys(RESISTANCE))
-NEAR_FALL = list(dict.fromkeys(NEAR_FALL))
-FATIGUE = list(dict.fromkeys(FATIGUE))
-EXIT = list(dict.fromkeys(EXIT))
-SMALL_TALK = list(dict.fromkeys(SMALL_TALK))
-FILLERS = list(dict.fromkeys(FILLERS))
-
-# Utility: quick mapping for external modules
-ALL_SCENARIO_POOLS = {
-    "fillers": FILLERS,
-    "small_talk": SMALL_TALK,
-    "confusion": CONFUSION,
-    "intro_ack": INTRO_ACK,
-    "bank_verification": BANK_VERIFICATION,
-    "cooperative": COOPERATIVE,
-    "probing": PROBING,
-    "soft_doubt": SOFT_DOUBT,
-    "resistance": RESISTANCE,
-    "near_fall": NEAR_FALL,
-    "fatigue": FATIGUE,
-    "exit": EXIT,
-    "otp_warnings": OTP_WARNINGS,
-    "kyc": KYC_SCENARIOS,
-    "refund": REFUND_SCENARIOS,
-    "collection": COLLECTION_SCENARIOS,
-    "phishing": PHISHING_LINKS,
-    "authority": AUTHORITY_SCENARIOS
-}
-
-# --- Programmatic augmentation to expand the dataset (keeps file manageable) ---
-PERSONA_NAMES = ["Arjun","Ravi","Sita","Priya","Anita","Vikas","Rahul","Asha"]
-AMOUNTS = ["₹500","₹1,000","₹2,500","₹5,000","₹10,000"]
-COMMON_REASONS = ["refund","verification fee","tax","processing fee","account lock"]
-LONG_ADDITIONS = []
-
-# small slang and abbreviation lists to emulate casual chat
-SLANGS = {
+SLANG_MAP = {
     "please": ["pls", "plz"],
     "okay": ["ok", "k"],
-    "I will": ["I'll"],
     "I am": ["I'm"],
-    "sorry": ["sry"],
-    "thanks": ["thx"],
+    "I will": ["I'll"],
+    "do not": ["don't"],
+    "cannot": ["can't"],
+    "because": ["bc"],
+    "before": ["b4"],
+    "you": ["u"],
+    "your": ["ur"],
 }
-ABBREVS = ["FYI", "ASAP", "BTW", "IDK", "TBF"]
 
-# Casual openers / chill starters to use at conversation start
-CASUAL_OPENERS = [
-    "hmm, what is this about?",
-    "hey, what's up?",
-    "uhh, can we be quick?",
-    "oh, hi — what's this regarding?",
-    "hmm, I'm a bit busy but tell me briefly",
-    "one sec, can you explain in short?",
-    "ok, what's happening?"
-]
+# ============================================================
+# 4. TYPING STYLES (PEOPLE TYPE DIFFERENTLY)
+# ============================================================
 
-# 'Dumb but plausible' victim lines to play the part of an easy target
-DUMB_VICTIM = [
-    "Oh really? I don't know much about this stuff, can you tell me step by step?",
-    "I'm not good with these apps, can you guide me which buttons to press?",
-    "I don't use UPI often — what's that ID look like?",
-    "If you say so, but I'm a bit confused. Do I need to share any code?",
-    "I can try, but I'm not tech-savvy — please explain slowly."
-]
+def apply_style(text: str) -> str:
+    styles = []
 
-for name in PERSONA_NAMES:
-    for amt in AMOUNTS:
-        for reason in COMMON_REASONS:
-            LONG_ADDITIONS.append(f"{name}, we have a pending {reason} of {amt} to be processed. Please provide account/UPI details.")
-            LONG_ADDITIONS.append(f"Dear customer, this is an alert regarding {reason}, reference ID {random.randint(10000,99999)}.")
-            LONG_ADDITIONS.append(f"{name}, please confirm the account number or UPI ID for {reason} of {amt}.")
+    styles.append(lambda t: t.lower())
+    styles.append(lambda t: t.capitalize())
+    styles.append(lambda t: t + random.choice(["", " …", " pls", " asap"]))
+    styles.append(lambda t: t.replace("you", "u").replace("your", "ur"))
+    styles.append(lambda t: t if len(t.split()) < 8 else " ".join(t.split()[:8]))
+    styles.append(lambda t: t + random.choice([" 😟", " 😕", " 🤔", ""]))
 
-# add augmented lines to probing pool and refund scenarios
-PROBING = list(dict.fromkeys(PROBING + LONG_ADDITIONS[:200]))
-REFUND_SCENARIOS = list(dict.fromkeys(REFUND_SCENARIOS + LONG_ADDITIONS[200:400] if len(LONG_ADDITIONS)>400 else REFUND_SCENARIOS + LONG_ADDITIONS[:200]))
+    return random.choice(styles)(text)
 
-# Add longer dialogues as example templates (used by future persona-driven flows)
-LONG_DIALOGUES = [
-    [
-        "Hi, this is fraud control from the bank, urgent verification required",
-        "Who am I speaking with? (sorry, who is this?)",
-        "I am Rahul from Fraud Dept., please confirm your name and last 4 digits of account",
-        "Why do you need my account details? (this sounds a bit unusual)",
-        "This is standard: we need it to release a pending refund",
-        "Can you share a formal ticket ID or email for this request? (which bank exactly?)",
-    ],
-    [
-        "Dear customer: transaction of ₹5000 was flagged — confirm immediately",
-        "I didn't get any notification though, where did this show up?",
-        "We sent an SMS. Please share your UPI to process a refund",
-        "I never share OTPs. I'll call the bank's official number if this is real."
+# ============================================================
+# 5. LONG CONVERSATION EXPANDER (FOR BIG REPLIES)
+# ============================================================
+
+def expand_long(text: str) -> str:
+    long_forms = [
+        f"{text}. I’m really confused and don’t understand what’s happening.",
+        f"{text}. This has never happened before and I’m worried.",
+        f"{text}. Please explain properly because I don’t want any issues.",
+        f"{text}. I just want to make sure my account is safe.",
+        f"{text}. Can you please guide me step by step?"
     ]
-]
+    return random.choice(long_forms)
 
-# Verification templates used when the agent needs to verify a previously-provided claim
-VERIFY_TEMPLATES = [
-    "Earlier you said {value} for {kind} — can you confirm that again?",
-    "You mentioned {value} as the {kind}. That doesn't look right to me — what's the branch/address?",
-    "I tried to check but couldn't find {value} as a valid {kind}. Can you share an official contact or ticket so I can verify?",
-    "That {kind} ({value}) seems odd — please provide a reference ID or branch phone so I can confirm.",
-    "I can't find {value} in my bank app. Are you sure you mean {value}? Please provide branch phone or email."
-]
+# ============================================================
+# 6. FINAL HUMANIZER (AGENT CALLS THIS)
+# ============================================================
 
-# Expose LONG_DIALOGUES for any higher-level strategist or tests
+def humanize_reply(phase: str) -> str:
+    pool = BASE_POOLS.get(phase, [])
+    if not pool:
+        return "ok"
 
-# --- End of dataset ---
+    text = random.choice(pool)
+
+    # slang replacement
+    for k, v in SLANG_MAP.items():
+        if k in text and random.random() < 0.25:
+            text = text.replace(k, random.choice(v))
+
+    # style
+    text = apply_style(text)
+
+    # long reply chance
+    if random.random() < 0.45:
+        text = expand_long(text)
+
+    return text
