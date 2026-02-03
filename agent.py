@@ -56,6 +56,11 @@ PAY_RE = re.compile(r"\b(upi|transfer|pay|payment|refund|charge|fee|ifsc|account
 THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|court)\b", re.I)
 EMAIL_RE = re.compile(r"\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", re.I)
 IFSC_RE = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b")
+MEMORY_ASK_RE = re.compile(r"(what did i (say|tell) (you|u)|what i said before|do you remember|repeat what i said|what did i tell you|what i told you)", re.I)
+REPEAT_COMPLAINT_RE = re.compile(r"(already told you|told you already|how many times|keep asking|repeat myself|you keep asking)", re.I)
+PUNCT_COMPLAINT_RE = re.compile(r"(question mark|qn mark|\?\s*all the time|why .* \?)", re.I)
+IDENTITY_CLAIM_RE = re.compile(r"\b(i am|this is|i'm)\b", re.I)
+BANK_CLAIM_RE = re.compile(r"\bbank\b", re.I)
 
 CASUAL_PREFIX = [
     "hmm",
@@ -122,11 +127,13 @@ class Agent:
         self.s.setdefault("recent_responses", [])
         self.s.setdefault("recent_texts", [])
         self.s.setdefault("recent_incoming", [])
+        self.s.setdefault("recent_incoming_texts", [])
         self.s.setdefault("phase_history", [])
         self.s.setdefault("outgoing_count", 0)
         self.s.setdefault("flags", {})
         self.s["flags"].setdefault("otp_ask_count", 0)
         self.s["flags"].setdefault("repeat_count", 0)
+        self.s["flags"].setdefault("punct_complaint", False)
         self.s.setdefault("memory", [])
         self.s.setdefault("claims", {})
         self.s.setdefault("extracted_profile", {
@@ -158,12 +165,15 @@ class Agent:
     def observe(self, incoming: str):
         text = incoming or ""
         self._track_repetition(text)
+        self._record_incoming(text)
 
         signals = self._detect_signals(text)
 
         # OTP tracking
         if signals.get("otp"):
             self.s["flags"]["otp_ask_count"] += 1
+        if signals.get("punct_complaint"):
+            self.s["flags"]["punct_complaint"] = True
 
         # mood drift
         mood = self.s.get("mood_score", 0.0)
@@ -195,6 +205,13 @@ class Agent:
         if len(recent_in) > 50:
             recent_in.pop(0)
 
+    def _record_incoming(self, text: str):
+        recent_texts = self.s.get("recent_incoming_texts", [])
+        recent_texts.append(text)
+        if len(recent_texts) > 30:
+            recent_texts.pop(0)
+        self.s["recent_incoming_texts"] = recent_texts
+
     # --------------------------------------------------------
     # Signal Detection
     # --------------------------------------------------------
@@ -209,6 +226,11 @@ class Agent:
             "threat": bool(THREAT_RE.search(lower)),
             "repetition": self.s.get("flags", {}).get("repeat_count", 0) >= 1,
             "contradiction": False,
+            "memory_probe": bool(MEMORY_ASK_RE.search(lower)),
+            "repeat_complaint": bool(REPEAT_COMPLAINT_RE.search(lower)),
+            "punct_complaint": bool(PUNCT_COMPLAINT_RE.search(lower)),
+            "identity_claim": bool(IDENTITY_CLAIM_RE.search(lower)),
+            "bank_claim": bool(BANK_CLAIM_RE.search(lower)),
         }
 
     # --------------------------------------------------------
@@ -310,11 +332,45 @@ class Agent:
             if len(mem) > 200:
                 self.s["memory"] = mem[-200:]
 
+    def _memory_reply(self) -> str:
+        """
+        Short recall of the last incoming message.
+        """
+        history = self.s.get("recent_incoming_texts", [])
+        if len(history) < 2:
+            return "not sure, say it again"
+        prev = history[-2]
+        if not prev:
+            return "dont remember, repeat pls"
+
+        # try to summarize by entities
+        lower = prev.lower()
+        if "bank" in lower:
+            mb = BANK_RE.search(prev)
+            if mb:
+                return f"you said you're from {mb.group(1)} bank"
+            return "you said you're from some bank"
+        if "freeze" in lower or "blocked" in lower:
+            return "you said account will freeze"
+        if "otp" in lower:
+            return "you asked for otp"
+        if "link" in lower:
+            return "you sent a link"
+
+        # fallback to short snippet
+        words = prev.split()
+        snippet = " ".join(words[:7])
+        if len(words) > 7:
+            snippet += "..."
+        return f"you said '{snippet}'"
+
     # --------------------------------------------------------
     # Phase Selection
     # --------------------------------------------------------
     def _select_phases(self, incoming: str, signals: Dict[str, bool], strategy: str) -> List[str]:
         phases: List[str] = []
+        last_phases = self.s.get("phase_history", [])
+        last_phases = last_phases[-1] if last_phases else []
 
         if self.s.get("outgoing_count", 0) == 0:
             phases.append("casual_entry")
@@ -327,6 +383,9 @@ class Agent:
             phases.extend(["resistance", "logic_doubt"])
         else:
             if signals.get("authority"):
+                phases.append("probing_identity")
+                phases.append("probing_bank")
+            if signals.get("identity_claim") or signals.get("bank_claim"):
                 phases.append("probing_identity")
                 phases.append("probing_bank")
             if signals.get("payment"):
@@ -346,6 +405,15 @@ class Agent:
 
         # de-dup and trim
         phases = list(dict.fromkeys(phases))[:MAX_PHASES_PER_MESSAGE]
+
+        # avoid repeating the exact same phase set when no new signals
+        if last_phases and phases == last_phases:
+            if "casual_entry" in phases:
+                phases = [p for p in phases if p != "casual_entry"]
+            if "probing_identity" in phases and "probing_identity" in last_phases:
+                phases = [p for p in phases if p != "probing_identity"]
+            if not phases:
+                phases = ["logic_doubt", "verification_loop"]
 
         # ensure at least 2 phases if possible
         if len(phases) == 1 and vd and vd.BASE_POOLS:
@@ -423,6 +491,14 @@ class Agent:
         t = t.lower()
         t = re.sub(r"\s+", " ", t).strip()
 
+        # reduce question marks after complaints
+        if self.s.get("flags", {}).get("punct_complaint"):
+            t = t.replace("?", "")
+        elif t.count("?") > 1:
+            # keep at most one question mark
+            parts = t.split("?")
+            t = "?".join(parts[:2]).strip()
+
         # add casual prefix sometimes
         if random.random() < 0.25 and not t.startswith(tuple(CASUAL_PREFIX)):
             t = f"{random.choice(CASUAL_PREFIX)} {t}"
@@ -442,6 +518,7 @@ class Agent:
     def generate_reply(self, strategy: str, incoming: str, from_respond: bool = False) -> str:
         if not from_respond:
             self._track_repetition(incoming)
+            self._record_incoming(incoming)
         signals = self._detect_signals(incoming)
 
         # OTP refusal after first request
@@ -537,6 +614,12 @@ class Agent:
 
         # strategy selection
         strategy = "probe"
+        if signals.get("memory_probe"):
+            strategy = "memory"
+        if signals.get("repeat_complaint"):
+            strategy = "annoyed"
+        if signals.get("punct_complaint"):
+            strategy = "calm"
         if self.s["flags"].get("repeat_count", 0) >= 3:
             strategy = "resist"
         if signals.get("threat"):
@@ -586,3 +669,29 @@ class Agent:
             "legit_score": legit_score,
             "is_scam": is_scam,
         }
+        # memory probe (what did I say before?)
+        if signals.get("memory_probe"):
+            reply = self._memory_reply()
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["verification_loop"], "memory", signals)
+
+        # repeat complaint -> annoyance + clarify
+        if signals.get("repeat_complaint"):
+            reply = random.choice([
+                "you already said it, why repeating",
+                "i heard you, stop repeating",
+                "why keep saying same thing",
+                "you said it already, explain properly",
+            ])
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["annoyance", "fatigue"], "annoyed", signals)
+
+        # punctuation complaint
+        if signals.get("punct_complaint"):
+            reply = random.choice([
+                "ok ok no more question marks",
+                "fine, i will type normal",
+                "ok chill, tell me properly",
+            ])
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["cooldown_state"], "calm", signals)
