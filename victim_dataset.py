@@ -880,7 +880,7 @@ def humanize_reply(phase: str) -> str:
     return text
 
 # ============================================================
-# 4. LEGACY EXPORTS (AGENT SAFE)
+# 4. LEGACY EXPORTS (AGENT SAFE)))
 # ============================================================
 
 ALL_SCENARIO_POOLS = BASE_POOLS
