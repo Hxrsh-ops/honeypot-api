@@ -224,6 +224,7 @@ async def honeypot(request: Request):
         return JSONResponse({
             "reply": reply,
             "session_id": session_id,
+            "incoming_preview": incoming[:120],
             "intent": output.get("intent"),
             "strategy": output.get("strategy"),
             "phases_used": output.get("phases_used"),
