@@ -19,16 +19,34 @@ try:
 except Exception:
     Anthropic = None
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4")
-USE_LLM = os.getenv("USE_LLM", "1")
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "8.0"))
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
-ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
+def _clean_key(value: str) -> str:
+    """
+    Railway/env var UIs sometimes end up with:
+    - accidental surrounding quotes
+    - a pasted `Bearer ...` prefix
+    - trailing newlines/spaces
+    """
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if v.lower().startswith("bearer "):
+        v = v[7:].strip()
+    # strip a single pair of surrounding quotes
+    if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+        v = v[1:-1].strip()
+    return v
+
+
+OPENAI_API_KEY = _clean_key(os.getenv("OPENAI_API_KEY") or "")
+OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-4").strip()
+USE_LLM = (os.getenv("USE_LLM") or "1").strip()
+LLM_TIMEOUT = float((os.getenv("LLM_TIMEOUT") or "8.0").strip())
+GROQ_API_KEY = _clean_key(os.getenv("GROQ_API_KEY") or "")
+GROQ_BASE_URL = (os.getenv("GROQ_BASE_URL") or "https://api.groq.com/openai/v1").strip()
+GROQ_MODEL = (os.getenv("GROQ_MODEL") or "").strip()
+ANTHROPIC_API_KEY = _clean_key(os.getenv("ANTHROPIC_API_KEY") or "")
+ANTHROPIC_MODEL = (os.getenv("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514").strip()
+ANTHROPIC_VERSION = (os.getenv("ANTHROPIC_VERSION") or "2023-06-01").strip()
 
 PHONE_RE = re.compile(r"(?:\+91[-\s]?)?[6-9]\d{9}")
 DIGIT_SEQ = re.compile(r"\b\d{4,}\b")

@@ -229,18 +229,11 @@ class Agent:
     def _unique_reply(self, reply: str, allow_variation: bool = True) -> str:
         if not reply:
             return DEFAULT_REPLY
-        recent = self.s.get("recent_responses", [])
+        recent_norm = self.s.get("recent_responses", [])
         recent_raw = self.s.get("recent_raw_responses", [])
-        norm = normalize_text(reply)
-        if norm in recent or reply in recent_raw:
-            # add a small human suffix and ensure no exact repeats
-            suffixes = ["ok", "hmm", "pls", "ya", "bro", "man", "ok then", "so?"]
-            tries = 0
-            while reply in recent_raw and tries < 5:
-                reply = f"{reply} {random.choice(suffixes)}"
-                tries += 1
-            if reply in recent_raw:
-                reply = f"{reply}!"
+        recent_raw_set = set(recent_raw)
+
+        # --- optional variation (still must remain unique) ---
         if allow_variation:
             # occasional shorten for length variety
             if len(reply) > 120 and random.random() < 0.2:
@@ -250,9 +243,49 @@ class Agent:
             # length variation for tests/human feel
             if len(reply) < 40 and random.random() < 0.3:
                 reply = f"{reply} {random.choice(['explain properly', 'not sure', 'be clear'])}"
-        recent.append(norm)
+
+        # --- enforce no exact repeats (deterministic, not luck-based) ---
+        reply = re.sub(r"\s+", " ", (reply or "").strip())
+        base = reply
+
+        if base in recent_raw_set:
+            flags = self.s.setdefault("flags", {})
+            counter = int(flags.get("outgoing_count", 0))
+
+            prefixes = ["hmm", "ok", "hey", "one sec", "wait", "bro", "ya", "listen", "hold on", "look"]
+            suffixes = ["ok", "hmm", "pls", "ya", "bro", "man", "ok then", "so?", "right", "nah"]
+            punct = ["", ".", "..", "...", "?", "??", "!"]
+
+            # Try a bunch of deterministic variants until we find a unique one.
+            for i in range(80):
+                idx = counter + i
+                p = prefixes[idx % len(prefixes)]
+                s = suffixes[(idx // len(prefixes)) % len(suffixes)]
+                q = punct[(idx // (len(prefixes) * len(suffixes))) % len(punct)]
+
+                form = idx % 4
+                if form == 0:
+                    cand = f"{p} {base}".strip()
+                elif form == 1:
+                    cand = f"{base} {s}".strip()
+                elif form == 2:
+                    cand = f"{p} {base} {s}".strip()
+                else:
+                    cand = f"{base}{q}".strip()
+
+                cand = re.sub(r"\s+", " ", cand).strip()
+                if cand and cand not in recent_raw_set:
+                    reply = cand
+                    flags["outgoing_count"] = idx + 1
+                    break
+            else:
+                # extremely unlikely; last-resort punctuation that stays non-numeric
+                reply = f"{base} ...".strip()
+
+        norm = normalize_text(reply)
+        recent_norm.append(norm)
         recent_raw.append(reply)
-        self.s["recent_responses"] = recent[-200:]
+        self.s["recent_responses"] = recent_norm[-200:]
         self.s["recent_raw_responses"] = recent_raw[-200:]
         return reply
 
