@@ -20,7 +20,7 @@ from agent_utils import (
     NAME_RE,
 )
 from memory_manager import MemoryManager
-from llm_adapter import generate_structured_reply, llm_available
+from llm_adapter import generate_structured_reply, llm_available, rephrase_with_llm
 
 logger = logging.getLogger("agent")
 logging.basicConfig(level=logging.INFO)
@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO)
 # Constants / Regex
 # ----------------------------
 DEFAULT_REPLY = "ok"
-LLM_USAGE_PROB = float(os.getenv("LLM_USAGE_PROB", "1.0"))
+LLM_REPHRASE_PROB = float(os.getenv("LLM_REPHRASE_PROB", "0.2"))
 
 OTP_RE = re.compile(r"\b(otp|one[-\s]?time\s?password|verification\s?code)\b", re.I)
 URGENT_RE = re.compile(r"\b(urgent|immediate|within|expire|freez|frozen|blocked|suspend|suspension)\b", re.I)
@@ -52,6 +52,7 @@ PARCEL_SCAM_RE = re.compile(r"(parcel|delivery|courier|re-delivery|customs fee|d
 
 SMALLTALK_RE = re.compile(r"\b(hi|hello|hey|how are you|what's up|whats up|sup|good morning|good night|good evening)\b", re.I)
 THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
+ROBOTIC_RE = re.compile(r"\b(please|kindly|regards|sincerely|apolog|regarding|dear|sir|madam|as per|we advise|we request)\b", re.I)
 
 
 class Agent:
@@ -142,9 +143,65 @@ class Agent:
             return "smalltalk"
         return "scam_pressure" if any([signals.get("otp"), signals.get("payment"), signals.get("link"), signals.get("authority"), signals.get("urgency"), signals.get("threat")]) else "general"
 
+    def _intent_directive(self, intent: str, signals: Dict[str, bool], memory_hint: Optional[str]) -> str:
+        if intent == "bot_accusation":
+            return "deny being a bot in a casual way and deflect; ask them to be clear"
+        if intent in ["legit_statement", "legit_transaction"]:
+            return "acknowledge calmly; do not probe; keep it short"
+        if intent == "social_impersonation":
+            return "verify identity; ask them to call or share official proof; be cautious"
+        if intent == "job_scam":
+            return "push back on fees; ask for official company email or offer letter"
+        if intent == "parcel_scam":
+            return "ask for official courier site/app; refuse to pay via link"
+        if intent == "smalltalk":
+            return "reply casual and ask what this is about"
+        if signals.get("repetition"):
+            return "you already said that; get slightly annoyed; ask for official email/branch/employee id"
+        if signals.get("otp") or signals.get("payment") or signals.get("account_request"):
+            return "do not share OTP or account details; ask for official email/branch/employee id"
+        if memory_hint:
+            return "answer using memory facts; keep it human"
+        return "be skeptical, casual, and ask for official proof if needed"
+
     # ----------------------------
     # Guardrails / Fallback
     # ----------------------------
+    def _looks_robotic(self, reply: str) -> bool:
+        if not reply:
+            return False
+        if ROBOTIC_RE.search(reply):
+            return True
+        if reply.count(".") >= 2:
+            return True
+        if len(reply.split()) > 26:
+            return True
+        return False
+
+    def _rewrite_if_robotic(self, reply: str) -> str:
+        if not reply or not self._looks_robotic(reply):
+            return reply
+        if llm_available() and random.random() < LLM_REPHRASE_PROB:
+            alt = rephrase_with_llm(reply)
+            if alt:
+                return alt
+        text = reply.replace("\n", " ").strip()
+        text = re.sub(r"\bkindly\b", "", text, flags=re.I)
+        text = re.sub(r"\bplease\b", "pls", text, flags=re.I)
+        text = re.sub(r"\bI am\b", "i'm", text, flags=re.I)
+        text = re.sub(r"\bI cannot\b", "i can't", text, flags=re.I)
+        text = re.sub(r"\bI will\b", "i'll", text, flags=re.I)
+        text = re.sub(r"\bI have\b", "i've", text, flags=re.I)
+        text = re.sub(r"\bdo not\b", "don't", text, flags=re.I)
+        text = re.sub(r"\bwill not\b", "won't", text, flags=re.I)
+        text = re.sub(r"\bregards\b.*$", "", text, flags=re.I)
+        text = re.sub(r"\bsincerely\b.*$", "", text, flags=re.I)
+        text = text.strip().lower()
+        # shorten if still long
+        if len(text) > 160:
+            text = " ".join(text.split()[:22])
+        return text.strip()
+
     def _guardrails(self, reply: str) -> str:
         if not reply:
             return DEFAULT_REPLY
@@ -152,6 +209,9 @@ class Agent:
         lowered = reply.lower()
         if "i am a bot" in lowered or "i'm a bot" in lowered:
             reply = re.sub(r"i\s*('?m| am)\s*a\s*bot", "i'm not a bot", reply, flags=re.I)
+        if "as an ai" in lowered or "as a bot" in lowered:
+            reply = re.sub(r"as an? (ai|bot)", "as a person", reply, flags=re.I)
+        reply = self._rewrite_if_robotic(reply)
         # redact sensitive
         reply = redact_sensitive(reply)
         # keep short-ish
@@ -164,14 +224,29 @@ class Agent:
         if not reply:
             return DEFAULT_REPLY
         recent = self.s.get("recent_responses", [])
+        recent_raw = self.s.get("recent_raw_responses", [])
         norm = normalize_text(reply)
-        if norm in recent:
-            reply = f"{reply} {random.choice(['ok','hmm','pls'])}"
+        if norm in recent or reply in recent_raw:
+            # add a small human suffix and ensure no exact repeats
+            suffixes = ["ok", "hmm", "pls", "ya", "bro", "man", "ok then", "so?"]
+            tries = 0
+            while reply in recent_raw and tries < 5:
+                reply = f"{reply} {random.choice(suffixes)}"
+                tries += 1
+            if reply in recent_raw:
+                reply = f"{reply}!"
+        # occasional shorten for length variety
+        if len(reply) > 120 and random.random() < 0.2:
+            reply = " ".join(reply.split()[:12])
+        elif len(reply) > 80 and random.random() < 0.15:
+            reply = " ".join(reply.split()[:16])
         # length variation for tests/human feel
         if len(reply) < 40 and random.random() < 0.3:
             reply = f"{reply} {random.choice(['explain properly', 'not sure', 'be clear'])}"
         recent.append(norm)
+        recent_raw.append(reply)
         self.s["recent_responses"] = recent[-200:]
+        self.s["recent_raw_responses"] = recent_raw[-200:]
         return reply
 
     def _fallback_reply(self, incoming: str, signals: Dict[str, bool]) -> str:
@@ -184,7 +259,7 @@ class Agent:
         if signals.get("memory_probe"):
             return self.memory.answer_memory_question()
         if signals.get("told_you"):
-            return "you told me your name, not the branch"
+            return self.memory.answer_profile_question()
         if signals.get("transaction_alert"):
             return "if it's not me i'll call the bank now"
         if signals.get("legit_statement"):
@@ -226,10 +301,7 @@ class Agent:
     def respond(self, incoming: str, raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         incoming = str(incoming or "")
         self.memory.add_user_message(incoming)
-
-        # update regex extractions
-        regex_extractions = self.memory.extract_from_text(incoming)
-        self.memory.merge_extractions(regex_extractions, source="regex")
+        self.observe(incoming)
 
         signals = self._detect_signals(incoming)
         intent_hint = self._intent_hint(signals)
@@ -241,38 +313,48 @@ class Agent:
         if signals.get("bot_accusation"):
             self.s["flags"]["bot_accused"] = True
 
-        # deterministic memory/profile answers
+        # repetition tracking
+        finger = normalize_text(incoming)
+        recent_texts = self.s.get("recent_texts", [])
+        if recent_texts and recent_texts[-1] == finger:
+            self.s["flags"]["repeat_count"] = self.s["flags"].get("repeat_count", 0) + 1
+        else:
+            self.s["flags"]["repeat_count"] = 0
+        recent_texts.append(finger)
+        self.s["recent_texts"] = recent_texts[-50:]
+        if self.s["flags"]["repeat_count"] >= 3:
+            signals["repetition"] = True
+
+        memory_hint = None
         if signals.get("ask_profile"):
-            reply = self.memory.answer_profile_question()
-            reply = self._unique_reply(self._guardrails(reply))
-            self.memory.add_bot_message(reply)
-            self.memory.update_summary(incoming, reply)
-            return self._build_response(reply, incoming, signals, intent_hint, llm_used=False)
+            memory_hint = self.memory.answer_profile_question()
+        elif signals.get("memory_probe"):
+            memory_hint = self.memory.answer_memory_question()
+        elif signals.get("told_you"):
+            memory_hint = self.memory.answer_profile_question()
 
-        if signals.get("memory_probe"):
-            reply = self.memory.answer_memory_question()
-            reply = self._unique_reply(self._guardrails(reply))
-            self.memory.add_bot_message(reply)
-            self.memory.update_summary(incoming, reply)
-            return self._build_response(reply, incoming, signals, intent_hint, llm_used=False)
-
-        if signals.get("told_you"):
-            reply = "you told me your name, not the branch"
-            reply = self._unique_reply(self._guardrails(reply))
-            self.memory.add_bot_message(reply)
-            self.memory.update_summary(incoming, reply)
-            return self._build_response(reply, incoming, signals, intent_hint, llm_used=False)
+        otp_probe_hint = None
+        if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
+            otp_probe_hint = random.choice([
+                "which branch are you from? send official email and employee id",
+                "if this is real, share your branch and official email",
+                "give branch + official id first, then i'll check",
+            ])
 
         # LLM-first
         llm_used = False
         reply = None
         llm_out = None
 
-        if llm_available() and random.random() < LLM_USAGE_PROB:
+        if llm_available():
+            directive = self._intent_directive(intent_hint, signals, memory_hint)
             context = {
                 "incoming": incoming,
                 "intent_hint": intent_hint,
                 "signals": signals,
+                "directive": directive,
+                "memory_hint": memory_hint,
+                "otp_probe_hint": otp_probe_hint,
                 "facts": self.s.get("memory_state", {}).get("facts", {}),
                 "claims": self.s.get("memory_state", {}).get("claims", {}),
                 "contradictions": self.s.get("memory_state", {}).get("contradictions", []),
@@ -289,6 +371,10 @@ class Agent:
             extractions = llm_out.get("extractions") or {}
             self.memory.merge_extractions(extractions, source="llm")
 
+            intent_out = llm_out.get("intent")
+            if isinstance(intent_out, str) and intent_out:
+                intent_hint = intent_out.strip()
+
             # update persona / summary
             mood_delta = llm_out.get("mood_delta", 0.0) or 0.0
             self.memory.update_persona(mood_delta)
@@ -302,8 +388,35 @@ class Agent:
             if follow and reply and len(reply) < 140 and follow.lower() not in reply.lower():
                 reply = f"{reply} {follow}".strip()
 
+        # enforce memory accuracy when asked directly
+        if memory_hint and reply:
+            facts = self.s.get("memory_state", {}).get("facts", {})
+            name = facts.get("name")
+            bank = facts.get("bank")
+            branch = facts.get("branch")
+            if signals.get("ask_profile") and name and name.lower() not in reply.lower():
+                reply = memory_hint
+            if signals.get("ask_profile") and bank and bank.lower() not in reply.lower():
+                reply = memory_hint
+            if signals.get("told_you") and memory_hint and len(reply.split()) < 3:
+                reply = memory_hint
+
+        if otp_probe_hint and reply:
+            if not any(k in reply.lower() for k in ["employee", "branch"]):
+                reply = otp_probe_hint
+
         if not reply:
-            reply = self._fallback_reply(incoming, signals)
+            reply = otp_probe_hint or memory_hint or self._fallback_reply(incoming, signals)
+
+        # repetition escalation enforce keywords
+        if signals.get("repetition"):
+            if not any(k in reply.lower() for k in ["official", "email", "branch", "call", "ticket", "suspicious"]):
+                reply = f"{reply} send official email or branch line".strip()
+
+        # suspicious id/ifsc ensure probe
+        lower = incoming.lower()
+        if ("ifsc" in lower or "employee" in lower or "id" in lower) and not any(k in reply.lower() for k in ["id", "ifsc", "email", "branch", "call"]):
+            reply = f"{reply} send official id or branch line".strip()
 
         reply = self._unique_reply(self._guardrails(reply))
         self.memory.add_bot_message(reply)

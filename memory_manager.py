@@ -82,6 +82,16 @@ class MemoryManager:
             persona["skepticism"] = max(0.0, min(5.0, float(persona.get("skepticism", 0.0)) + mood_delta))
         except Exception:
             pass
+        # drift mood/style based on skepticism
+        try:
+            sk = float(persona.get("skepticism", 0.0))
+            if sk >= 4.0:
+                persona["mood"] = "annoyed"
+                persona["style"] = "short"
+            elif sk >= 2.0:
+                persona["mood"] = "skeptical"
+        except Exception:
+            pass
         self.mem["persona"] = persona
 
     def extract_from_text(self, text: str) -> Dict[str, Any]:
@@ -195,16 +205,37 @@ class MemoryManager:
         branch = facts.get("branch")
 
         if name and bank and branch:
-            return f"you said {name} from {bank} bank, branch {branch}"
+            return random.choice([
+                f"you said {name} from {bank} bank, branch {branch}, right?",
+                f"your name is {name} and branch {branch} at {bank}, yeah?",
+                f"{name} from {bank} bank, branch {branch} — that's what you said",
+            ])
         if name and bank and not branch:
-            return f"you said {name} from {bank} bank, you didnt give branch"
+            return random.choice([
+                f"your name is {name}, right? i don't think you told me the branch yet",
+                f"you said {name} from {bank} bank, but no branch info",
+                f"{name} from {bank} — branch missing tho",
+            ])
         if name and not bank:
-            return f"you said your name is {name}, no bank yet"
-        return "i don't have your name/branch yet"
+            return random.choice([
+                f"you said your name is {name}, but no bank yet",
+                f"name was {name}, i didn't catch the bank",
+            ])
+        return random.choice([
+            "i don't have your name/branch yet",
+            "not sure, you didn't share name/branch",
+        ])
 
     def answer_memory_question(self) -> str:
         msgs = self.mem.get("last_user_messages", [])
         if len(msgs) < 2:
-            return "not sure, say it again"
+            return "not sure, say it again?"
         prev = msgs[-2]
-        return f"you said '{prev[:60]}'"
+        if not prev:
+            return "i didn't catch it, say again?"
+        short = prev[:60]
+        return random.choice([
+            f"you said '{short}'",
+            f"you said: {short}",
+            f"you mentioned '{short}'",
+        ])

@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from agent import Agent
-from agent_utils import safe_parse_body, redact_sensitive
+from agent_utils import safe_parse_body, redact_sensitive, scam_signal_score
 from learning_engine import persist_learning_snapshot
 
 # ------------------------------------------------------------
@@ -133,15 +133,13 @@ async def honeypot(request: Request):
         # ----------------------------------------------------
         # API KEY (soft enforcement)
         # ----------------------------------------------------
+        invalid_key = False
         if API_KEY:
             provided = request.headers.get("x-api-key", "")
             if provided != API_KEY:
                 # Never hard-fail hackathon systems
                 logger.warning("Invalid API key attempt")
-                return JSONResponse(
-                    {"reply": "Service temporarily unavailable"},
-                    status_code=200
-                )
+                invalid_key = True
 
         # ----------------------------------------------------
         # SAFE BODY PARSING
@@ -185,7 +183,6 @@ async def honeypot(request: Request):
         # ----------------------------------------------------
         # AGENT EXECUTION (ISOLATED)
         # ----------------------------------------------------
-        agent = Agent(session)
         # store incoming turn
         session["turns"].append({
             "speaker": "scammer",
@@ -193,11 +190,33 @@ async def honeypot(request: Request):
             "ts": time.time()
         })
 
-        output = await asyncio.to_thread(
-            agent.respond,
-            incoming,
-            raw=body
-        )
+        if invalid_key:
+            score = scam_signal_score(incoming)
+            score = min(score, 5.0)
+            is_scam = score >= 2.5
+            legit_score = max(0.0, 1 - (score / 5.0))
+            output = {
+                "reply": "Service temporarily unavailable",
+                "intent": "blocked",
+                "strategy": "blocked",
+                "signals": {},
+                "extracted_profile": session.get("extracted_profile", {}),
+                "claims": session.get("claims", {}),
+                "memory": session.get("memory", []),
+                "scam_score": score,
+                "legit_score": legit_score,
+                "is_scam": is_scam,
+                "llm_used": False,
+                "persona_state": session.get("memory_state", {}).get("persona", {}),
+                "session_summary": session.get("memory_state", {}).get("session_summary", ""),
+            }
+        else:
+            agent = Agent(session)
+            output = await asyncio.to_thread(
+                agent.respond,
+                incoming,
+                raw=body
+            )
 
         reply = output.get("reply", "Hmm.")
         reply = redact_sensitive(reply)
