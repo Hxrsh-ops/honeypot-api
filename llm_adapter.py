@@ -73,6 +73,41 @@ def last_llm_error() -> Dict[str, Any]:
     return dict(_LAST_ERROR)
 
 
+def _key_fingerprint(key: str) -> Dict[str, Any]:
+    k = (key or "").strip()
+    if not k:
+        return {"set": False}
+    return {
+        "set": True,
+        "prefix": k[:4],
+        "suffix": k[-4:],
+        "len": len(k),
+    }
+
+
+def llm_debug_info() -> Dict[str, Any]:
+    # Never return raw keys.
+    return {
+        "use_llm": USE_LLM,
+        "openai": {
+            "available": _openai_available(),
+            "model": OPENAI_MODEL,
+            "key": _key_fingerprint(OPENAI_API_KEY),
+        },
+        "groq": {
+            "available": _groq_available(),
+            "model": GROQ_MODEL or "",
+            "base_url": GROQ_BASE_URL,
+            "key": _key_fingerprint(GROQ_API_KEY),
+        },
+        "anthropic": {
+            "available": _anthropic_available(),
+            "model": ANTHROPIC_MODEL,
+            "key": _key_fingerprint(ANTHROPIC_API_KEY),
+        },
+    }
+
+
 def _openai_available() -> bool:
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return False

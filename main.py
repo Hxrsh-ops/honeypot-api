@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 
 from agent import Agent
 from agent_utils import safe_parse_body, redact_sensitive, scam_signal_score
-from llm_adapter import llm_available, current_llm_provider, last_llm_error
+from llm_adapter import llm_available, current_llm_provider, last_llm_error, llm_debug_info
 from learning_engine import persist_learning_snapshot
 
 # ------------------------------------------------------------
@@ -195,6 +195,7 @@ async def honeypot(request: Request):
             }
             if debug_llm:
                 resp["llm_error"] = last_llm_error()
+                resp["llm_debug"] = llm_debug_info()
             return JSONResponse(resp)
 
         # ----------------------------------------------------
@@ -213,6 +214,7 @@ async def honeypot(request: Request):
             }
             if debug_llm:
                 resp["llm_error"] = last_llm_error()
+                resp["llm_debug"] = llm_debug_info()
             return JSONResponse(resp)
 
         # ----------------------------------------------------
@@ -302,6 +304,7 @@ async def honeypot(request: Request):
         }
         if debug_llm:
             resp["llm_error"] = last_llm_error()
+            resp["llm_debug"] = llm_debug_info()
         return JSONResponse(resp)
 
     except Exception as e:
@@ -318,6 +321,7 @@ async def honeypot(request: Request):
         }
         # always include llm error on hard fails; it's already an error response
         resp["llm_error"] = last_llm_error()
+        resp["llm_debug"] = llm_debug_info()
         return JSONResponse(resp)
 
 
