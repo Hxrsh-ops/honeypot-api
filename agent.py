@@ -40,7 +40,7 @@ THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|c
 
 ASK_PROFILE_RE = re.compile(r"(tell me my name|what'?s my name|what is my name|my name and branch|tell me my branch|my branch name)", re.I)
 MEMORY_ASK_RE = re.compile(r"(what did i (say|tell) (you|u)|what i said before|do you remember|repeat what i said|what did i tell you|what i told you)", re.I)
-TOLD_YOU_RE = re.compile(r"(i told you|already told you|told you before).*(name|branch)", re.I)
+TOLD_YOU_RE = re.compile(r"(i told you|already told you|told you before)", re.I)
 BOT_ACCUSATION_RE = re.compile(r"\b(you are a bot|youre a bot|u are a bot|bot)\b", re.I)
 CONFUSED_RE = re.compile(r"\b(confused|huh|what\?)\b", re.I)
 
@@ -93,6 +93,8 @@ class Agent:
             tokens = ["hmm", "hey", "one sec", "ok", "oh", "hi", "lemme", "hold on"]
             if reply and not any(t in reply.lower() for t in tokens) and len(reply.split()) >= 6:
                 reply = f"hmm {reply}"
+            # ensure variation remains for tests/human feel
+            reply = self._unique_reply(reply, allow_variation=True)
         return reply
 
     # ----------------------------
@@ -220,7 +222,7 @@ class Agent:
             reply = reply[:200]
         return reply
 
-    def _unique_reply(self, reply: str) -> str:
+    def _unique_reply(self, reply: str, allow_variation: bool = True) -> str:
         if not reply:
             return DEFAULT_REPLY
         recent = self.s.get("recent_responses", [])
@@ -235,14 +237,15 @@ class Agent:
                 tries += 1
             if reply in recent_raw:
                 reply = f"{reply}!"
-        # occasional shorten for length variety
-        if len(reply) > 120 and random.random() < 0.2:
-            reply = " ".join(reply.split()[:12])
-        elif len(reply) > 80 and random.random() < 0.15:
-            reply = " ".join(reply.split()[:16])
-        # length variation for tests/human feel
-        if len(reply) < 40 and random.random() < 0.3:
-            reply = f"{reply} {random.choice(['explain properly', 'not sure', 'be clear'])}"
+        if allow_variation:
+            # occasional shorten for length variety
+            if len(reply) > 120 and random.random() < 0.2:
+                reply = " ".join(reply.split()[:12])
+            elif len(reply) > 80 and random.random() < 0.15:
+                reply = " ".join(reply.split()[:16])
+            # length variation for tests/human feel
+            if len(reply) < 40 and random.random() < 0.3:
+                reply = f"{reply} {random.choice(['explain properly', 'not sure', 'be clear'])}"
         recent.append(norm)
         recent_raw.append(reply)
         self.s["recent_responses"] = recent[-200:]
@@ -331,7 +334,11 @@ class Agent:
         elif signals.get("memory_probe"):
             memory_hint = self.memory.answer_memory_question()
         elif signals.get("told_you"):
-            memory_hint = self.memory.answer_profile_question()
+            facts = self.s.get("memory_state", {}).get("facts", {})
+            if facts.get("name") or facts.get("bank") or facts.get("branch"):
+                memory_hint = self.memory.answer_profile_question()
+            else:
+                memory_hint = self.memory.answer_memory_question()
 
         otp_probe_hint = None
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
@@ -418,7 +425,10 @@ class Agent:
         if ("ifsc" in lower or "employee" in lower or "id" in lower) and not any(k in reply.lower() for k in ["id", "ifsc", "email", "branch", "call"]):
             reply = f"{reply} send official id or branch line".strip()
 
-        reply = self._unique_reply(self._guardrails(reply))
+        allow_variation = True
+        if intent_hint in ["smalltalk", "legit_statement", "legit_transaction"]:
+            allow_variation = False
+        reply = self._unique_reply(self._guardrails(reply), allow_variation=allow_variation)
         self.memory.add_bot_message(reply)
         self.memory.update_summary(incoming, reply)
 

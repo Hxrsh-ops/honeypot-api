@@ -43,6 +43,14 @@ def llm_available() -> bool:
     return _openai_available() or _anthropic_available()
 
 
+def current_llm_provider() -> str:
+    if _openai_available():
+        return "openai"
+    if _anthropic_available():
+        return "anthropic"
+    return "none"
+
+
 def redact_sensitive(text: str) -> str:
     if not text:
         return text

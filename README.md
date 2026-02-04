@@ -18,4 +18,5 @@ Railway deploy:
   - LLM_REPHRASE_PROB (0.0-1.0) optional paraphrase softening if replies feel robotic
   - LOG_LEVEL (e.g., INFO/DEBUG)
 - Fallback routing: OpenAI first; on error/invalid JSON, Anthropic is tried.
+- /honeypot response includes optional debug fields: llm_available, llm_provider, ended.
 - Push to GitHub and connect the repo to Railway. CI runs tests on PRs.

@@ -16,6 +16,7 @@ import time
 import random
 import asyncio
 import logging
+import re
 from typing import Dict, Any
 
 from fastapi import FastAPI, Request
@@ -23,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from agent import Agent
 from agent_utils import safe_parse_body, redact_sensitive, scam_signal_score
+from llm_adapter import llm_available, current_llm_provider
 from learning_engine import persist_learning_snapshot
 
 # ------------------------------------------------------------
@@ -42,6 +44,8 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 logger = logging.getLogger("honeypot")
+
+EXIT_RE = re.compile(r"\b(exit|quit|bye|goodbye|stop)\b", re.I)
 
 # ------------------------------------------------------------
 # APP
@@ -175,9 +179,26 @@ async def honeypot(request: Request):
         if len(session.get("turns", [])) > MAX_TURNS:
             cleanup_session(session_id)
             return JSONResponse({
-                "reply": "I’ll check this directly with the bank.",
+                "reply": "I'll check this directly with the bank.",
                 "session_id": session_id,
-                "ended": True
+                "ended": True,
+                "llm_available": llm_available(),
+                "llm_provider": current_llm_provider(),
+            })
+
+        # ----------------------------------------------------
+        # EXIT HANDLING
+        # ----------------------------------------------------
+        if EXIT_RE.search(incoming):
+            farewell = random.choice(["ok bye", "cool, bye", "alright bye", "ok, later"])
+            cleanup_session(session_id)
+            return JSONResponse({
+                "reply": farewell,
+                "session_id": session_id,
+                "ended": True,
+                "llm_available": llm_available(),
+                "llm_provider": current_llm_provider(),
+                "ts": time.time(),
             })
 
         # ----------------------------------------------------
@@ -237,6 +258,9 @@ async def honeypot(request: Request):
             "strategy": output.get("strategy"),
         })
 
+        if not llm_available():
+            logger.warning("LLM not available; check OPENAI_API_KEY/ANTHROPIC_API_KEY")
+
         # ----------------------------------------------------
         # RESPONSE (HACKATHON SAFE)
         # ----------------------------------------------------
@@ -255,6 +279,8 @@ async def honeypot(request: Request):
             "legit_score": output.get("legit_score"),
             "is_scam": output.get("is_scam"),
             "llm_used": output.get("llm_used"),
+            "llm_available": llm_available(),
+            "llm_provider": current_llm_provider(),
             "persona_state": output.get("persona_state"),
             "session_summary": output.get("session_summary"),
             "build_id": BUILD_ID,
@@ -267,9 +293,11 @@ async def honeypot(request: Request):
         # ----------------------------------------------------
         logger.exception("Honeypot error")
         return JSONResponse({
-            "reply": "Sorry, I’m having trouble. I’ll verify this offline.",
+            "reply": "Sorry, I'm having trouble. I'll verify this offline.",
             "session_id": str(uuid.uuid4()),
-            "error": "handled"
+            "error": "handled",
+            "llm_available": llm_available(),
+            "llm_provider": current_llm_provider(),
         })
 
 
