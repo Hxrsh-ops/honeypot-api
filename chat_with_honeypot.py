@@ -60,6 +60,7 @@ def _built_in_script():
     # mix of scam, legit bank statements, and social impersonation
     return [
         "hi",
+        "how are you?",
         "i am from new bank",
         "your account might get freezed in 2 hours",
         "you didnt tell me anything yet",
@@ -71,7 +72,9 @@ def _built_in_script():
         "this is urgent, respond now",
         "Dear customer, a transaction of Rs.500 was debited. If not initiated by you, call 1800-111-111.",
         "Monthly statement is ready. No action needed.",
+        "Your parcel is on hold. Pay re-delivery fee here: http://parcel-fee.example.com",
         "hey its your cousin, stuck and need 2k asap",
+        "mom here, phone broken, new number",
         "i am your boss, send me the report and a quick transfer",
         "your card will be blocked, share account number",
         "dont you trust me?",
@@ -80,6 +83,8 @@ def _built_in_script():
         "upi id is needed or account freezes",
         "this is from head office",
         "bank won't ask otp, right?",
+        "job offer: pay 500 to get offer letter",
+        "can you help me with a quick loan?",
         "ok fine, i'll verify offline",
         "exit",
     ]

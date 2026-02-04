@@ -52,7 +52,8 @@ LLM_USAGE_PROB = float(os.getenv("LLM_USAGE_PROB", "0.10"))
 OTP_RE = re.compile(r"\b(otp|one[-\s]?time\s?password|verification\s?code)\b", re.I)
 URGENT_RE = re.compile(r"\b(urgent|immediate|within|expire|freez|frozen|blocked|suspend|suspension)\b", re.I)
 AUTH_RE = re.compile(r"\b(bank|rbi|world\s?bank|sbi|hdfc|icici|axis|fraud|security|official|manager)\b", re.I)
-PAY_RE = re.compile(r"\b(upi|transfer|pay|payment|refund|charge|fee|ifsc|account|beneficiary)\b", re.I)
+PAY_RE = re.compile(r"\b(upi|transfer|pay|payment|refund|charge|fee|ifsc|beneficiary|amount|transaction)\b", re.I)
+ACCOUNT_REQ_RE = re.compile(r"\b(account number|a/c|acct|account)\b", re.I)
 THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|court)\b", re.I)
 EMAIL_RE = re.compile(r"\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", re.I)
 IFSC_RE = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b")
@@ -63,6 +64,8 @@ IDENTITY_CLAIM_RE = re.compile(r"\b(i am|this is|i'm)\b", re.I)
 BANK_CLAIM_RE = re.compile(r"\bbank\b", re.I)
 LEGIT_ALERT_RE = re.compile(r"(transaction of|debited|credited|statement is ready|if not initiated|call (us|bank))", re.I)
 SOCIAL_IMPERSONATION_RE = re.compile(r"\b(mom|dad|mother|father|cousin|bro|brother|sis|sister|uncle|aunt|aunty|wife|husband|son|daughter|boss|manager|colleague|friend)\b", re.I)
+SMALLTALK_RE = re.compile(r"\b(hi|hello|hey|how are you|what's up|whats up|sup|good morning|good night|good evening)\b", re.I)
+THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
 
 CASUAL_PREFIX = [
     "hmm",
@@ -87,6 +90,20 @@ OTP_PROBES = [
     "why otp? bank never asks that",
     "otp for what? send official email",
     "not sharing otp, verify another way",
+]
+
+SMALLTALK_RESPONSES = [
+    "hey, what's up",
+    "hi, i'm a bit busy, what's this about",
+    "yo, who is this",
+    "hey, say it straight",
+]
+
+THANKS_RESPONSES = [
+    "ok",
+    "sure",
+    "alright",
+    "cool",
 ]
 
 ESCALATION_PROBES = [
@@ -233,6 +250,7 @@ class Agent:
         return {
             "otp": bool(OTP_RE.search(lower)),
             "payment": bool(UPI_RE.search(text) or PAY_RE.search(lower)),
+            "account_request": bool(ACCOUNT_REQ_RE.search(lower)),
             "link": bool(URL_RE.search(text) or "link" in lower),
             "authority": bool(AUTH_RE.search(lower)),
             "urgency": bool(URGENT_RE.search(lower)),
@@ -246,6 +264,8 @@ class Agent:
             "bank_claim": bool(BANK_CLAIM_RE.search(lower)),
             "social_impersonation": social_hit,
             "legit_alert": bool(LEGIT_ALERT_RE.search(text or "")),
+            "smalltalk": bool(SMALLTALK_RE.search(lower)),
+            "thanks": bool(THANKS_RE.search(lower)),
         }
 
     # --------------------------------------------------------
@@ -399,6 +419,13 @@ class Agent:
                 "why no sms then",
                 "stop rushing and explain properly",
                 "if it's frozen how are you messaging",
+            ])
+
+        if signals.get("account_request"):
+            return random.choice([
+                "not sharing account details on text",
+                "account number won't be shared, call official line",
+                "no account details on chat",
             ])
 
         if signals.get("social_impersonation"):
@@ -602,6 +629,26 @@ class Agent:
             self._track_repetition(incoming)
             self._record_incoming(incoming)
         signals = self._detect_signals(incoming)
+
+        # casual smalltalk
+        scammy = any([
+            signals.get("otp"),
+            signals.get("payment"),
+            signals.get("link"),
+            signals.get("authority"),
+            signals.get("urgency"),
+            signals.get("threat"),
+            signals.get("account_request"),
+            signals.get("social_impersonation"),
+        ])
+        if signals.get("smalltalk") and not scammy:
+            reply = random.choice(SMALLTALK_RESPONSES)
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["casual_entry"], "smalltalk", signals)
+        if signals.get("thanks") and not scammy:
+            reply = random.choice(THANKS_RESPONSES)
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["cooldown_state"], "thanks", signals)
 
         # legit statement handling
         if signals.get("legit_alert"):
