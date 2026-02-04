@@ -39,7 +39,7 @@ BANK_RE = re.compile(
 
 # Names (avoid over-capture)
 NAME_RE = re.compile(
-    r"\b(?:i am|this is|my name is)\s+([A-Z][a-z]{1,20})(?:\s+[A-Z][a-z]{1,20})?\b",
+    r"\b(?:i am|this is|my name is)\s+([A-Za-z]{2,20})(?:\s+[A-Za-z]{2,20})?\b",
     re.I
 )
 

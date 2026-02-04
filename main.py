@@ -235,6 +235,9 @@ async def honeypot(request: Request):
             "scam_score": output.get("scam_score"),
             "legit_score": output.get("legit_score"),
             "is_scam": output.get("is_scam"),
+            "llm_used": output.get("llm_used"),
+            "persona_state": output.get("persona_state"),
+            "session_summary": output.get("session_summary"),
             "build_id": BUILD_ID,
             "ts": time.time()
         })

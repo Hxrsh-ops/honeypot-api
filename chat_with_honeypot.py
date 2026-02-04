@@ -61,6 +61,10 @@ def _built_in_script():
     return [
         "hi",
         "how are you?",
+        "hello, I am ramesh from hit bank",
+        "i litrally told you the name and branch in the very first msg",
+        "tell me my name and my branch name",
+        "you are definetly an bot",
         "i am from new bank",
         "your account might get freezed in 2 hours",
         "you didnt tell me anything yet",
