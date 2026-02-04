@@ -19,7 +19,7 @@ from agent_utils import (
     BANK_RE,
     NAME_RE,
 )
-from memory_manager import MemoryManager
+from memory_manager import MemoryManager, FREE_EMAIL_DOMAINS
 from llm_adapter import generate_structured_reply, llm_available, rephrase_with_llm
 
 logger = logging.getLogger("agent")
@@ -40,7 +40,10 @@ THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|c
 
 ASK_PROFILE_RE = re.compile(r"(tell me my name|what'?s my name|what is my name|my name and branch|tell me my branch|my branch name)", re.I)
 MEMORY_ASK_RE = re.compile(r"(what did i (say|tell) (you|u)|what i said before|do you remember|repeat what i said|what did i tell you|what i told you)", re.I)
-TOLD_YOU_RE = re.compile(r"(i told you|already told you|told you before)", re.I)
+TOLD_YOU_RE = re.compile(
+    r"(i told you|already told you|told you before|i already gave|i just gave|i gave you|i mentioned already|i said already)",
+    re.I,
+)
 BOT_ACCUSATION_RE = re.compile(r"\b(you are a bot|youre a bot|u are a bot|bot)\b", re.I)
 CONFUSED_RE = re.compile(r"\b(confused|huh|what\?)\b", re.I)
 CLARIFICATION_RE = re.compile(r"(what do you want me to explain|explain what|what exactly|what should i explain|explain\??\s*what)", re.I)
@@ -161,14 +164,16 @@ class Agent:
         if intent == "parcel_scam":
             return "ask for official courier site/app; refuse to pay via link"
         if intent == "smalltalk":
-            return "reply casual and ask what this is about"
+            return "reply very short like a normal texter (1 line). no long greetings. ask who this is / what's this about"
         if signals.get("repetition"):
             return "you already said that; get slightly annoyed; ask for official email/branch/employee id"
         if signals.get("otp") or signals.get("payment") or signals.get("account_request"):
-            return "do not share OTP or account details; ask for official email/branch/employee id"
+            return "refuse otp/account stuff. be a bit annoyed. ask for ONE specific proof (branch landline or bank-domain email or employee id). don't loop 'explain'"
         if memory_hint:
-            return "answer using memory facts; keep it human"
-        return "be skeptical, casual, and ask for official proof if needed"
+            return "use the provided memory_hint wording. keep it human + short"
+        if signals.get("authority") and not any([signals.get("urgency"), signals.get("threat"), signals.get("otp"), signals.get("payment"), signals.get("link")]):
+            return "they claim bank/authority but gave no issue. be suspicious: ask what this is about + one proof. don't be friendly"
+        return "be skeptical, short, and human. avoid customer-support tone. ask for one specific proof if needed"
 
     # ----------------------------
     # Guardrails / Fallback
@@ -419,13 +424,8 @@ class Agent:
         elif signals.get("memory_probe"):
             memory_hint = self.memory.answer_memory_question()
         elif signals.get("told_you"):
-            facts = self.s.get("memory_state", {}).get("facts", {})
-            if facts.get("name") or facts.get("bank") or facts.get("branch"):
-                memory_hint = self.memory.answer_profile_question()
-            else:
-                memory_hint = self.memory.answer_memory_question()
-                if memory_hint and len(memory_hint.split()) < 12:
-                    memory_hint = f"{memory_hint} — that's all i saw"
+            # "i already told/gave you" — respond with what we have + what's missing.
+            memory_hint = self.memory.answer_verification_status()
 
         otp_probe_hint = None
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
@@ -441,6 +441,25 @@ class Agent:
         llm_out = None
 
         if llm_available():
+            # help the LLM avoid looping the same asks:
+            facts_now = self.s.get("memory_state", {}).get("facts", {}) or {}
+            verification_asks: List[str] = []
+            if not facts_now.get("branch"):
+                verification_asks.append("branch name (or branch landline)")
+            if not facts_now.get("employee_id"):
+                verification_asks.append("employee id")
+            email_now = facts_now.get("email")
+            if not email_now:
+                verification_asks.append("official bank-domain email (not gmail)")
+            else:
+                try:
+                    domain = str(email_now).split("@", 1)[1].lower().strip() if "@" in str(email_now) else ""
+                    if domain in FREE_EMAIL_DOMAINS:
+                        verification_asks.append("official bank-domain email (not gmail)")
+                except Exception:
+                    pass
+            verification_asks = verification_asks[:2]
+
             directive = self._intent_directive(intent_hint, signals, memory_hint)
             context = {
                 "incoming": incoming,
@@ -449,6 +468,7 @@ class Agent:
                 "directive": directive,
                 "memory_hint": memory_hint,
                 "otp_probe_hint": otp_probe_hint,
+                "verification_asks": verification_asks,
                 "facts": self.s.get("memory_state", {}).get("facts", {}),
                 "claims": self.s.get("memory_state", {}).get("claims", {}),
                 "contradictions": self.s.get("memory_state", {}).get("contradictions", []),

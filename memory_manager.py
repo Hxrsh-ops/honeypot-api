@@ -8,9 +8,29 @@ from agent_utils import NAME_RE, BANK_RE, PHONE_RE, UPI_RE, URL_RE
 FROM_BANK_RE = re.compile(r"\bfrom\s+([a-z][a-z\s]{1,30}?)\s+bank\b", re.I)
 BRANCH_RE = re.compile(r"\bbranch(?:\s+name)?\s*(?:is|:|-)\s*([a-z][a-z\s]{1,30})\b", re.I)
 BRANCH_CITY_RE = re.compile(r"\bbranch\s+(?:in|at)\s+([a-z][a-z\s]{1,30})\b", re.I)
+BRANCH_SUFFIX_RE = re.compile(r"\b([a-z][a-z\s]{1,30})\s+branch\b", re.I)
 EMAIL_RE = re.compile(r"\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", re.I)
 IFSC_RE = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b")
 EMP_ID_RE = re.compile(r"\b\d{6,}\b")
+
+FREE_EMAIL_DOMAINS = {
+    "gmail.com",
+    "googlemail.com",
+    "yahoo.com",
+    "yahoo.in",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "icloud.com",
+    "aol.com",
+    "proton.me",
+    "protonmail.com",
+    "zoho.com",
+    "gmx.com",
+    "mail.com",
+    "yandex.com",
+    "rediffmail.com",
+}
 
 DEFAULT_PERSONAS = [
     {"state": "at_work", "energy": "medium", "mood": "neutral", "style": "short"},
@@ -123,6 +143,30 @@ class MemoryManager:
             if not any(x in candidate for x in ["msg", "message", "first", "told", "already"]):
                 extracted["branch"] = candidate
 
+        # "chennai branch" style
+        branch_suffix = BRANCH_SUFFIX_RE.search(text)
+        if branch_suffix and not extracted.get("branch"):
+            candidate = branch_suffix.group(1).strip().lower()
+            if not any(x in candidate for x in ["msg", "message", "first", "told", "already"]):
+                extracted["branch"] = candidate
+
+        # If we recently asked for branch, a short city/name reply likely IS the branch hint.
+        if not extracted.get("branch"):
+            last_bot = ""
+            try:
+                bots = self.mem.get("last_bot_messages", [])
+                last_bot = (bots[-1] if bots else "") or ""
+            except Exception:
+                last_bot = ""
+            if "branch" in last_bot.lower():
+                candidate = (text or "").strip().lower()
+                if (
+                    3 <= len(candidate) <= 24
+                    and re.fullmatch(r"[a-z][a-z\\s]{2,23}", candidate) is not None
+                    and candidate not in {"ok", "okay", "yes", "no", "ya", "yeah", "yep", "sure", "exit", "bye"}
+                ):
+                    extracted["branch"] = candidate
+
         email_m = EMAIL_RE.search(text)
         if email_m:
             extracted["email"] = email_m.group(0)
@@ -224,6 +268,67 @@ class MemoryManager:
         return random.choice([
             "i don't have your name/branch yet",
             "not sure, you didn't share name/branch",
+        ])
+
+    def answer_verification_status(self) -> str:
+        """
+        Human-ish summary of what they've provided and what's still missing/suspicious.
+        Avoid echoing raw numbers/emails back.
+        """
+        facts = self.mem.get("facts", {})
+
+        name = facts.get("name")
+        bank = facts.get("bank")
+        branch = facts.get("branch")
+        email = facts.get("email")
+        emp = facts.get("employee_id")
+
+        missing: List[str] = []
+        if not branch:
+            missing.append("branch name / branch landline")
+        if not emp:
+            missing.append("employee id")
+
+        free_email = False
+        email_domain = ""
+        if isinstance(email, str) and "@" in email:
+            email_domain = email.split("@", 1)[1].lower().strip()
+            free_email = email_domain in FREE_EMAIL_DOMAINS
+
+        if not email:
+            missing.append("official bank-domain email")
+        elif free_email:
+            missing.append("bank-domain email (not gmail etc)")
+
+        who = "you"
+        if name:
+            who = name
+
+        if missing:
+            ask = missing[0]
+            # keep it short and a bit annoyed
+            if free_email and email_domain:
+                return random.choice([
+                    f"ok {who}, i saw the id + all, but that mail is {email_domain}. not official. send {ask}",
+                    f"bro that's a {email_domain} mail. need {ask}",
+                    f"ok but gmail isn't bank mail. send {ask}",
+                ])
+            return random.choice([
+                f"you said {bank} bank and gave some details. still need {ask}",
+                f"ok i got what you sent. still need {ask}",
+                f"you gave the basics, but i still need {ask}",
+            ])
+
+        # nothing missing: push them to state the actual issue
+        if bank and branch:
+            return random.choice([
+                f"ok {bank} {branch} branch, got it. what's the issue then?",
+                "ok got it. so what's the actual problem?",
+                "cool. now tell me what exactly you want from me",
+            ])
+        return random.choice([
+            "ok. what exactly do you want now?",
+            "got it. so what's the issue?",
         ])
 
     def answer_memory_question(self) -> str:

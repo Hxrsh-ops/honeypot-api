@@ -190,21 +190,23 @@ def _safe_json_parse(text: str) -> Optional[Dict[str, Any]]:
 
 def _system_prompt() -> str:
     return (
-        "You are a real human texting on WhatsApp/SMS. "
+        "You are a real person texting on WhatsApp/SMS (NOT customer support). "
+        "Style: mostly lowercase, a bit messy, short + reactive. "
+        "Do NOT write stuff like: 'thanks for reaching out', 'how can i help', 'what brings you here', "
+        "'purpose of your message', or other assistant-y phrases. "
         "Never say you are a bot or AI. "
-        "Never share OTP, PIN, or sensitive financial data. "
-        "Keep replies casual, imperfect, and human. "
-        "Usually keep it short, but when clarifying/probing you may send 2-4 short lines (not long paragraphs). "
-        "Your goal is to engage and extract scammer details (name, branch, employee id, email, links). "
-        "If asked to recall earlier info, use memory facts. "
-        "If context includes memory_hint or otp_probe_hint, prefer that phrasing. "
-        "Use directive as a soft instruction for tone and intent. "
-        "Avoid generic loops like 'explain' over and over; ask for specific proof (branch, official email, employee id). "
+        "Never share OTP, PIN, account number, or UPI. "
+        "Usually reply in 1 short line; when probing/clarifying you may use 2-4 short lines (no essays). "
+        "Ask at most ONE new question per reply (unless clarifying). "
+        "Do not repeat the same question in back-to-back turns; acknowledge what they already provided. "
+        "If someone claims to be a bank/authority, be skeptical and mildly annoyed; ask for specific proof "
+        "(branch landline / bank-domain email / employee id / official link). "
+        "If context includes verification_asks, choose from that list (prefer the first). "
+        "If asked to recall earlier info, use memory facts; if memory_hint exists, prefer that wording. "
+        "Only mention contradictions if contradictions[] is non-empty; do NOT invent contradictions. "
+        "Your goal is to keep them talking and extract scammer details (name, branch, employee id, email, links). "
         "Reply ONLY as a single valid JSON object (no markdown, no code fences) with keys: "
-        "reply, extractions, intent, mood_delta, follow_up_question, session_summary. "
-        "Example: "
-        "{\"reply\":\"...\",\"extractions\":{},\"intent\":\"scam_pressure\",\"mood_delta\":0.0,"
-        "\"follow_up_question\":\"\",\"session_summary\":\"...\"}"
+        "reply, extractions, intent, mood_delta, follow_up_question, session_summary."
     )
 
 
@@ -285,7 +287,7 @@ def openai_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     messages=messages,
                     timeout=LLM_TIMEOUT,
                     temperature=0.7,
-                    max_tokens=260,
+                    max_tokens=300,
                     response_format={"type": "json_object"},
                 )
             except Exception:
@@ -294,7 +296,7 @@ def openai_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     messages=messages,
                     timeout=LLM_TIMEOUT,
                     temperature=0.7,
-                    max_tokens=260,
+                    max_tokens=300,
                 )
             text = resp.choices[0].message.content.strip()
             parsed = _coerce_structured(text, context)
@@ -344,7 +346,7 @@ def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     messages=messages,
                     timeout=LLM_TIMEOUT,
                     temperature=0.7,
-                    max_tokens=260,
+                    max_tokens=300,
                     response_format={"type": "json_object"},
                 )
             except Exception:
@@ -353,7 +355,7 @@ def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     messages=messages,
                     timeout=LLM_TIMEOUT,
                     temperature=0.7,
-                    max_tokens=260,
+                    max_tokens=300,
                 )
             text = resp.choices[0].message.content.strip()
             parsed = _coerce_structured(text, context)
