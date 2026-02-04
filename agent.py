@@ -63,9 +63,13 @@ PUNCT_COMPLAINT_RE = re.compile(r"(question mark|qn mark|\?\s*all the time|why .
 IDENTITY_CLAIM_RE = re.compile(r"\b(i am|this is|i'm)\b", re.I)
 BANK_CLAIM_RE = re.compile(r"\bbank\b", re.I)
 LEGIT_ALERT_RE = re.compile(r"(transaction of|debited|credited|statement is ready|if not initiated|call (us|bank))", re.I)
+TRANSACTION_ALERT_RE = re.compile(r"(transaction of|debited|credited|if not initiated)", re.I)
+STATEMENT_ALERT_RE = re.compile(r"(statement is ready|monthly statement|e-statement|statement ready|no action needed)", re.I)
 SOCIAL_IMPERSONATION_RE = re.compile(r"\b(mom|dad|mother|father|cousin|bro|brother|sis|sister|uncle|aunt|aunty|wife|husband|son|daughter|boss|manager|colleague|friend)\b", re.I)
 SMALLTALK_RE = re.compile(r"\b(hi|hello|hey|how are you|what's up|whats up|sup|good morning|good night|good evening)\b", re.I)
 THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
+JOB_SCAM_RE = re.compile(r"(job offer|offer letter|pay.*(fee|deposit)|training fee|placement fee)", re.I)
+MONEY_HELP_RE = re.compile(r"(need money|loan|borrow|transfer|send.*money|2k|5k|urgent cash)", re.I)
 
 CASUAL_PREFIX = [
     "hmm",
@@ -264,8 +268,12 @@ class Agent:
             "bank_claim": bool(BANK_CLAIM_RE.search(lower)),
             "social_impersonation": social_hit,
             "legit_alert": bool(LEGIT_ALERT_RE.search(text or "")),
+            "transaction_alert": bool(TRANSACTION_ALERT_RE.search(text or "")),
+            "statement_alert": bool(STATEMENT_ALERT_RE.search(text or "")),
             "smalltalk": bool(SMALLTALK_RE.search(lower)),
             "thanks": bool(THANKS_RE.search(lower)),
+            "job_scam": bool(JOB_SCAM_RE.search(text or "")),
+            "money_help": bool(MONEY_HELP_RE.search(lower)),
         }
 
     # --------------------------------------------------------
@@ -439,6 +447,13 @@ class Agent:
                 "call me, this number feels off",
                 "what's our last chat about?",
                 "send a voice note so i know it's you",
+            ])
+
+        if signals.get("money_help"):
+            return random.choice([
+                "i can't send money on text, call me",
+                "why money? call me from your usual number",
+                "not doing transfers like this",
             ])
 
         if signals.get("payment") and signals.get("urgency"):
@@ -651,14 +666,33 @@ class Agent:
             return self._finalize_reply(reply, ["cooldown_state"], "thanks", signals)
 
         # legit statement handling
-        if signals.get("legit_alert"):
+        if signals.get("transaction_alert"):
             reply = random.choice([
-                "ok thanks, i'll check the app",
-                "noted, i'll verify and call bank if needed",
-                "ok, i'll check my statement later",
+                "if it's not me i'll call the bank now",
+                "ok i'll check app and call bank",
+                "noted, i'll verify and report if needed",
             ])
             reply = self._style_scrubber(reply)
             return self._finalize_reply(reply, ["polite_engagement"], "legit", signals)
+
+        if signals.get("statement_alert"):
+            reply = random.choice([
+                "ok thanks, i'll check the app",
+                "ok, i'll check my statement later",
+                "noted, thanks",
+            ])
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["polite_engagement"], "legit", signals)
+
+        # job scam handling
+        if signals.get("job_scam"):
+            reply = random.choice([
+                "no fees for job, this sounds fake",
+                "not paying for offer letter",
+                "real jobs don't ask money",
+            ])
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["logic_doubt", "resistance"], "job_scam", signals)
 
         # OTP refusal after first request
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
@@ -817,8 +851,10 @@ class Agent:
             score += 0.2
         if signals.get("threat"):
             score += 0.3
-        if signals.get("legit_alert"):
+        if signals.get("statement_alert"):
             score = max(0.0, score - 1.5)
+        elif signals.get("transaction_alert"):
+            score = max(0.0, score - 0.5)
         score = min(score, 5.0)
         is_scam = score >= 2.5
         legit_score = max(0.0, 1 - (score / 5.0))
