@@ -733,8 +733,12 @@ class Agent:
 
         if llm_out and isinstance(llm_out, dict):
             reply = llm_out.get("reply")
+            if reply is not None and not isinstance(reply, str):
+                reply = str(reply)
             llm_used = True
             extractions = llm_out.get("extractions") or {}
+            if not isinstance(extractions, dict):
+                extractions = {}
             self.memory.merge_extractions(extractions, source="llm")
 
             intent_out = llm_out.get("intent")
