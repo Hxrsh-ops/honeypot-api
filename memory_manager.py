@@ -314,7 +314,7 @@ class MemoryManager:
                     f"ok but gmail isn't bank mail. send {ask}",
                 ])
             return random.choice([
-                f"you said {bank} bank and gave some details. still need {ask}",
+                f"you said you're from {bank} bank and gave some details. still need {ask}" if bank else f"you said you're from the bank and gave some details. still need {ask}",
                 f"ok i got what you sent. still need {ask}",
                 f"you gave the basics, but i still need {ask}",
             ])
