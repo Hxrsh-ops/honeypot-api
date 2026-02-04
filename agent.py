@@ -65,6 +65,18 @@ PARCEL_SCAM_RE = re.compile(r"(parcel|delivery|courier|re-delivery|customs fee|d
 SMALLTALK_RE = re.compile(r"\b(hi|hello|hey|how are you|what's up|whats up|sup|good morning|good night|good evening)\b", re.I)
 THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
 ROBOTIC_RE = re.compile(r"\b(please|kindly|regards|sincerely|apolog|regarding|dear|sir|madam|as per|we advise|we request)\b", re.I)
+ASSISTANTY_RE = re.compile(
+    r"\b("
+    r"thanks for reaching out|"
+    r"what brings you here|"
+    r"purpose of your message|"
+    r"how can i help|how may i help|"
+    r"how'?s your day going|"
+    r"reach out|assist you"
+    r")\b",
+    re.I,
+)
+CONTRADICTION_TALK_RE = re.compile(r"\b(earlier you said|but now|now you're saying)\b", re.I)
 
 
 class Agent:
@@ -195,6 +207,8 @@ class Agent:
             return False
         if ROBOTIC_RE.search(reply):
             return True
+        if ASSISTANTY_RE.search(reply):
+            return True
         if reply.count(".") >= 2:
             return True
         if len(reply.split()) > 26:
@@ -204,6 +218,14 @@ class Agent:
     def _rewrite_if_robotic(self, reply: str) -> str:
         if not reply or not self._looks_robotic(reply):
             return reply
+        if ASSISTANTY_RE.search(reply):
+            # Hard rewrite: assistant-y greetings are a dead giveaway.
+            return random.choice([
+                "who's this?",
+                "who is this",
+                "haan who?",
+                "what is it?",
+            ])
         if llm_available() and random.random() < LLM_REPHRASE_PROB:
             alt = rephrase_with_llm(reply)
             if alt:
@@ -249,6 +271,113 @@ class Agent:
         if last >= 10:
             return text[: last + 1].strip()
         return text
+
+    def _humanize_ask(self, ask: str) -> str:
+        a = (ask or "").strip().lower()
+        if not a:
+            return a
+        # make the "asks" feel like texting, not a form.
+        a = a.replace("official bank-domain email (not gmail)", "bank email (not gmail)")
+        a = a.replace("branch landline (not mobile)", "branch landline (not mobile)")
+        a = a.replace("branch name (not just city)", "exact branch name (not just city)")
+        return a
+
+    def _verification_status_line(self, proof_state: Dict[str, Any], verification_asks: List[str], scam_confirmed: bool) -> str:
+        """
+        Single short line that:
+        - acknowledges what they already gave
+        - calls out the most suspicious bit (if any)
+        - asks for ONE next thing (rotates based on verification_asks)
+        """
+        proof = proof_state or {}
+        suspicious = set(proof.get("suspicious") or [])
+        missing = list(proof.get("missing") or [])
+        email_dom = str(proof.get("email_domain") or "").strip()
+
+        facts = self.s.get("memory_state", {}).get("facts", {}) or {}
+        name = (facts.get("name") or "").strip()
+        branch = (facts.get("branch") or "").strip()
+
+        who = name or "bro"
+
+        ask = ""
+        if verification_asks:
+            ask = verification_asks[0]
+        elif missing:
+            ask = missing[0]
+
+        ask = self._humanize_ask(ask)
+
+        # Preface based on suspicion
+        pre = ""
+        if "free_email" in suspicious and email_dom:
+            pre = random.choice([
+                f"bro that's {email_dom}, not bank mail",
+                f"{email_dom} mail isn't official",
+                f"gmail type mail isn't official",
+            ])
+        elif "landline_looks_mobile" in suspicious:
+            pre = random.choice([
+                "that 'landline' looks like a mobile number",
+                "nah that number looks mobile",
+                "branch landline shouldn't look like mobile",
+            ])
+        elif "branch_ambiguous" in suspicious:
+            if branch and len(branch.split()) == 1:
+                pre = random.choice([f"{branch} is just city", "city isn't branch name"])
+            elif branch:
+                pre = random.choice([f"'{branch}' is too generic", "need exact branch name"])
+            else:
+                pre = "branch name missing"
+        else:
+            pre = random.choice(["ok", "hmm", "listen", "wait"])
+
+        if not ask:
+            return random.choice([
+                "ok what exactly do you want?",
+                "hmm what's the issue then?",
+            ])
+
+        # Honeypot mode: when scam is confirmed, keep them engaged while extracting link/upi/etc.
+        if scam_confirmed and "link" in ask:
+            return random.choice([
+                f"ok ok send me {ask}",
+                f"fine. send {ask}",
+                f"send {ask} then. i’ll check",
+            ])
+        if scam_confirmed and "upi" in ask:
+            return random.choice([
+                f"upi for what? send {ask}",
+                f"ok which upi? send {ask}",
+                f"send {ask} first, then we talk",
+            ])
+
+        return random.choice([
+            f"{pre}. send {ask}",
+            f"ya {who}, but {pre}. send {ask}",
+            f"ok, still need {ask}",
+        ])
+
+    def _maybe_append_followup(self, reply: str, follow: str) -> str:
+        r = (reply or "").strip()
+        f = (follow or "").strip()
+        if not r or not f:
+            return r or f
+        rlow = r.lower()
+        flow = f.lower()
+        if flow in rlow:
+            return r
+        # avoid double-questions / repeated asks
+        if "?" in r and "?" in f:
+            return r
+        # skip if high token overlap (LLM often repeats itself)
+        rtoks = set(re.findall(r"[a-z0-9]+", rlow))
+        ftoks = set(re.findall(r"[a-z0-9]+", flow))
+        if rtoks and (len(rtoks & ftoks) / max(1, len(ftoks))) >= 0.65:
+            return r
+        if len(r) > 160:
+            return r
+        return f"{r} {f}".strip()
 
     def _guardrails(self, reply: str) -> str:
         if not reply:
@@ -512,6 +641,54 @@ class Agent:
             else:
                 verification_asks = ["case/ticket id or reference number"]
 
+        # Honeypot behavior: when they describe "steps/process", ask for the link/beneficiary early to extract intel.
+        incoming_low = incoming.lower()
+        if scam_confirmed and not profile_now.get("url"):
+            if any(w in incoming_low for w in ["click", "link", "steps", "step", "process", "guide", "renew", "update", "verify"]):
+                link_ask = "the link you're asking me to open"
+                verification_asks = [link_ask] + [a for a in verification_asks if a != link_ask]
+        if scam_confirmed and signals.get("payment") and not profile_now.get("upi"):
+            upi_ask = "the upi id / beneficiary you're asking me to send to"
+            verification_asks = [upi_ask] + [a for a in verification_asks if a != upi_ask]
+
+        verification_asks = verification_asks[:2]
+
+        # Rotate asks to avoid asking the *same* thing back-to-back when they keep dodging.
+        last_ask = self.s.get("flags", {}).get("last_verification_ask")
+        if last_ask and verification_asks and verification_asks[0] == last_ask and len(verification_asks) > 1:
+            verification_asks = [verification_asks[1], verification_asks[0]]
+
+        # Override memory hints with proof-aware, honeypot-friendly wording.
+        if signals.get("told_you"):
+            memory_hint = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+        if signals.get("clarification_request") and any(
+            [
+                scam_confirmed,
+                signals.get("otp"),
+                signals.get("payment"),
+                signals.get("link"),
+                signals.get("authority"),
+                signals.get("urgency"),
+                signals.get("threat"),
+            ]
+        ):
+            ask0 = self._humanize_ask(verification_asks[0]) if verification_asks else "official proof"
+            memory_hint = random.choice(
+                [
+                    f"explain what? what exactly you want me to do + send {ask0}",
+                    f"ok, what are the steps? and send {ask0}",
+                    f"what do you want from me? send {ask0} first",
+                ]
+            )
+
+        # Honeypot stage (helps LLM drift from skeptical -> play-along -> stall).
+        honeypot_stage = int(self.s.get("flags", {}).get("honeypot_stage", 0) or 0)
+        if scam_confirmed:
+            honeypot_stage = 1 if honeypot_stage <= 0 else min(6, honeypot_stage + 1)
+            self.s.setdefault("flags", {})["honeypot_stage"] = honeypot_stage
+        else:
+            honeypot_stage = 0
+
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
             # First OTP ask: probe for proof (not a generic OTP refusal).
             ask = verification_asks[0] if verification_asks else "official bank-domain email"
@@ -539,6 +716,7 @@ class Agent:
                 "proof_state": proof_state,
                 "scam_confirmed": scam_confirmed,
                 "intel_targets": intel_targets,
+                "honeypot_stage": honeypot_stage,
                 "facts": facts_now,
                 "claims": self.s.get("memory_state", {}).get("claims", {}),
                 "contradictions": self.s.get("memory_state", {}).get("contradictions", []),
@@ -569,23 +747,46 @@ class Agent:
                 self.memory.update_summary(incoming, reply or "")
 
             follow = llm_out.get("follow_up_question")
-            if follow and reply and len(reply) < 140 and follow.lower() not in reply.lower():
-                reply = f"{reply} {follow}".strip()
+            if follow and reply:
+                reply = self._maybe_append_followup(str(reply), str(follow))
 
         # loop-breaker: if the reply asks again for proof we already have, replace with a
         # short "got it / here's what's missing" line.
         if reply:
             rlow = reply.lower()
-            emp_known = bool(facts_now.get("employee_id"))
-            branch_known = bool(facts_now.get("branch"))
-            email_known = bool(facts_now.get("email")) and ("official bank-domain email" not in " ".join(verification_asks))
+            missing_low = " ".join([str(m).lower() for m in (proof_state.get("missing") or [])])
+            need_email = ("bank-domain email" in missing_low) or ("bank email" in missing_low)
+            need_landline = "landline" in missing_low
+            need_branch = "branch name" in missing_low
+
+            emp_ok = bool(facts_now.get("employee_id"))
+            email_ok = bool(facts_now.get("email")) and not need_email
+            landline_ok = bool(facts_now.get("branch_phone")) and not need_landline
+            branch_ok = bool(facts_now.get("branch")) and not need_branch
 
             asks_emp = bool(re.search(r"\b(employee id|emp id)\b", rlow) and re.search(r"\b(send|share|give)\b", rlow))
             asks_branch = bool(re.search(r"\bbranch\b", rlow) and re.search(r"\b(send|share|give|which)\b", rlow))
-            asks_official = bool(re.search(r"\bofficial\b", rlow) and re.search(r"\b(id|email|landline)\b", rlow))
+            asks_email = bool(re.search(r"\b(email|mail)\b", rlow) and re.search(r"\b(send|share|give)\b", rlow))
+            asks_landline = bool(re.search(r"\b(landline|office line|branch line)\b", rlow) and re.search(r"\b(send|share|give)\b", rlow))
 
-            if (asks_emp and emp_known) or (asks_branch and branch_known) or (asks_official and emp_known and branch_known and email_known):
-                reply = self.memory.answer_verification_status()
+            if (asks_emp and emp_ok) or (asks_branch and branch_ok) or (asks_email and email_ok) or (asks_landline and landline_ok):
+                reply = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+
+            # Don't allow the LLM to invent contradictions; only mention them if we have any recorded.
+            if not (self.s.get("memory_state", {}).get("contradictions") or []) and CONTRADICTION_TALK_RE.search(rlow):
+                reply = random.choice([
+                    "huh? just say what you want",
+                    "what are you even saying. just tell me clearly",
+                ])
+
+            # If we're still missing proof, don't let the reply sound "convinced".
+            if proof_state.get("missing") and re.search(r"\b(ok|okay|cool)\s+got it\b|\bgot it\b", rlow):
+                reply = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+
+            # Clarification loop breaker: must be specific, not "explain" spam.
+            if signals.get("clarification_request"):
+                if "explain" in rlow and not any(k in rlow for k in ["branch", "email", "employee", "landline", "link", "call", "upi", "ticket"]):
+                    reply = memory_hint or self._fallback_reply(incoming, signals)
 
         # enforce memory accuracy when asked directly
         if memory_hint and reply:
@@ -632,6 +833,8 @@ class Agent:
         reply = self._unique_reply(self._guardrails(reply), allow_variation=allow_variation)
         self.memory.add_bot_message(reply)
         self.memory.update_summary(incoming, reply)
+        if verification_asks:
+            self.s.setdefault("flags", {})["last_verification_ask"] = verification_asks[0]
 
         return self._build_response(reply, incoming, signals, intent_hint, llm_used=llm_used)
 

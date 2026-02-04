@@ -1,4 +1,6 @@
 venv/
 __pycache__/
+.pytest_cache/
 .env
 learning_data/
+koyeb_smoke.log

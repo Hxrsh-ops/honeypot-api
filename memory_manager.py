@@ -236,7 +236,12 @@ class MemoryManager:
             return False
         # Single-token "city" answers are often ambiguous for "branch name".
         toks = [t for t in re.split(r"\s+", b) if t]
-        return len(toks) == 1 and len(b) <= 14
+        if len(toks) == 1 and len(b) <= 14:
+            return True
+        # "chennai branch"/"mumbai main" style answers are still too generic.
+        if len(toks) == 2 and toks[-1] in {"branch", "main", "city"} and len(toks[0]) <= 14:
+            return True
+        return False
 
     def compute_proof_state(self) -> Dict[str, Any]:
         """
@@ -473,10 +478,12 @@ class MemoryManager:
                     f"nah, need the real branch landline. send {ask}",
                 ])
             if branch_ambiguous and "branch name" in ask:
+                branch_is_city = bool(branch) and len(str(branch).strip().split()) == 1
+                branch_label = str(branch or "").strip()
                 return random.choice([
-                    f"you said {branch}, that's just city. send {ask}",
-                    f"ok {branch} where exactly? send {ask}",
-                    f"city isn't branch name. send {ask}",
+                    f"you said {branch_label}, that's just city. send {ask}" if branch_is_city else f"'{branch_label}' is too generic. send {ask}",
+                    f"ok {branch_label} where exactly? send {ask}",
+                    f"that's not a proper branch name. send {ask}",
                 ])
             return random.choice([
                 f"you said you're from {bank} bank and gave some details. still need {ask}" if bank else f"you said you're from the bank and gave some details. still need {ask}",

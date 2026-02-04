@@ -177,6 +177,20 @@ async def honeypot(request: Request):
             or str(uuid.uuid4())
         )
 
+        # Empty / health-check style requests should never trigger LLM calls.
+        if not incoming.strip():
+            resp = {
+                "reply": "??",
+                "session_id": session_id,
+                "llm_available": llm_available(),
+                "llm_provider": current_llm_provider(),
+                "ts": time.time(),
+            }
+            if debug_llm:
+                resp["llm_error"] = last_llm_error()
+                resp["llm_debug"] = llm_debug_info()
+            return JSONResponse(resp)
+
         session = get_session(session_id)
         session["last_seen"] = time.time()
         session.setdefault("turns", [])
@@ -255,7 +269,7 @@ async def honeypot(request: Request):
                 raw=body
             )
 
-        reply = output.get("reply", "Hmm.")
+        reply = output.get("reply") or "Hmm."
         reply = redact_sensitive(reply)
 
         # ----------------------------------------------------
