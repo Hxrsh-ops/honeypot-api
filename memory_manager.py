@@ -6,7 +6,7 @@ from typing import Dict, Any, List
 from agent_utils import NAME_RE, BANK_RE, PHONE_RE, UPI_RE, URL_RE
 
 FROM_BANK_RE = re.compile(r"\bfrom\s+([a-z][a-z\s]{1,30}?)\s+bank\b", re.I)
-BRANCH_RE = re.compile(r"\bbranch(?:\s+name|\s+is)?\s+([a-z][a-z\s]{1,30})\b", re.I)
+BRANCH_RE = re.compile(r"\bbranch(?:\s+name)?\s*(?:is|:|-)\s*([a-z][a-z\s]{1,30})\b", re.I)
 BRANCH_CITY_RE = re.compile(r"\bbranch\s+(?:in|at)\s+([a-z][a-z\s]{1,30})\b", re.I)
 EMAIL_RE = re.compile(r"\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", re.I)
 IFSC_RE = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b")
@@ -103,11 +103,15 @@ class MemoryManager:
 
         branch_m = BRANCH_RE.search(text)
         if branch_m:
-            extracted["branch"] = branch_m.group(1).strip().lower()
+            candidate = branch_m.group(1).strip().lower()
+            if not any(x in candidate for x in ["msg", "message", "first", "told", "already"]):
+                extracted["branch"] = candidate
 
         branch_city = BRANCH_CITY_RE.search(text)
         if branch_city:
-            extracted["branch"] = branch_city.group(1).strip().lower()
+            candidate = branch_city.group(1).strip().lower()
+            if not any(x in candidate for x in ["msg", "message", "first", "told", "already"]):
+                extracted["branch"] = candidate
 
         email_m = EMAIL_RE.search(text)
         if email_m:

@@ -99,6 +99,10 @@ class Agent:
     # ----------------------------
     def _detect_signals(self, text: str) -> Dict[str, bool]:
         lower = (text or "").lower()
+        smalltalk = bool(SMALLTALK_RE.search(lower))
+        if smalltalk and (AUTH_RE.search(lower) or "i am" in lower or "from" in lower):
+            smalltalk = False
+
         return {
             "otp": bool(OTP_RE.search(lower)),
             "payment": bool(UPI_RE.search(text) or PAY_RE.search(lower)),
@@ -117,7 +121,7 @@ class Agent:
             "social_impersonation": bool(SOCIAL_IMPERSONATION_RE.search(lower)),
             "job_scam": bool(JOB_SCAM_RE.search(text or "")),
             "parcel_scam": bool(PARCEL_SCAM_RE.search(text or "")),
-            "smalltalk": bool(SMALLTALK_RE.search(lower)),
+            "smalltalk": smalltalk,
             "thanks": bool(THANKS_RE.search(lower)),
         }
 
@@ -186,7 +190,13 @@ class Agent:
         if signals.get("legit_statement"):
             return "noted, i'll check later"
         if signals.get("social_impersonation"):
+            if "boss" in lower or "manager" in lower:
+                return "call me from office line, not this"
             return "call me, this number feels off"
+        if signals.get("job_scam"):
+            return "real jobs don't ask money"
+        if signals.get("parcel_scam"):
+            return "i'll check the official courier app"
         if signals.get("otp"):
             return "otp is private, not sharing"
         if signals.get("payment") or signals.get("account_request"):
