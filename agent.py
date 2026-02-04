@@ -213,6 +213,31 @@ class Agent:
             text = " ".join(text.split()[:22])
         return text.strip()
 
+    def _trim_incomplete(self, reply: str) -> str:
+        """
+        Avoid returning replies that got cut mid-sentence by token limits (common with open models).
+        Only trims when the message ends in an obvious dangling word/phrase.
+        """
+        if not reply:
+            return reply
+        text = (reply or "").strip()
+        # Already ends cleanly.
+        if re.search(r"[.!?]$", text):
+            return text
+
+        # Ends with a dangling stopword or fragment.
+        if not re.search(r"(\\bi want to\\b|\\bcan you give me\\b|\\bgive me your\\b)$", text, re.I) and not re.search(
+            r"\\b(to|the|a|an|of|for|from|with|and|or|but|so|because)\\b$",
+            text,
+            re.I,
+        ):
+            return text
+
+        last = max(text.rfind("."), text.rfind("?"), text.rfind("!"))
+        if last >= 10:
+            return text[: last + 1].strip()
+        return text
+
     def _guardrails(self, reply: str) -> str:
         if not reply:
             return DEFAULT_REPLY
@@ -223,6 +248,7 @@ class Agent:
         if "as an ai" in lowered or "as a bot" in lowered:
             reply = re.sub(r"as an? (ai|bot)", "as a person", reply, flags=re.I)
         reply = self._rewrite_if_robotic(reply)
+        reply = self._trim_incomplete(reply)
         # redact sensitive
         reply = redact_sensitive(reply)
         # keep short-ish
