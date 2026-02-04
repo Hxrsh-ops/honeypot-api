@@ -816,6 +816,12 @@ class Agent:
             if not any(k in reply.lower() for k in ["email", "branch", "employee", "landline", "call", "link"]):
                 reply = otp_probe_hint
 
+        # If they're applying pressure but the reply is too vague/short, force a specific next ask.
+        if reply and not signals.get("smalltalk"):
+            pressure = any([signals.get("urgency"), signals.get("threat"), signals.get("authority"), signals.get("otp"), signals.get("payment"), signals.get("link")])
+            if pressure and len(str(reply).split()) <= 3:
+                reply = memory_hint or self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+
         if not reply:
             reply = otp_probe_hint or memory_hint or self._fallback_reply(incoming, signals)
 
