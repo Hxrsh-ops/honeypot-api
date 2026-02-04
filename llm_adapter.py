@@ -3,6 +3,7 @@
 import os
 import re
 import json
+import time
 import logging
 from typing import Dict, Any, Optional
 
@@ -33,6 +34,25 @@ PHONE_RE = re.compile(r"(?:\+91[-\s]?)?[6-9]\d{9}")
 DIGIT_SEQ = re.compile(r"\b\d{4,}\b")
 UPI_LIKE = re.compile(r"\b[\w\.-]+@[\w-]+\b", re.I)
 CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.I)
+
+# Best-effort debug hook (safe to expose only when explicitly requested).
+_LAST_ERROR: Dict[str, Any] = {"provider": "none", "type": "", "error": "", "ts": 0.0}
+
+
+def _set_last_error(provider: str, err: Exception):
+    global _LAST_ERROR
+    msg = str(err) if err is not None else ""
+    # Avoid dumping huge stack-ish payloads into memory/response.
+    _LAST_ERROR = {
+        "provider": provider,
+        "type": type(err).__name__ if err is not None else "",
+        "error": (msg or "")[:320],
+        "ts": time.time(),
+    }
+
+
+def last_llm_error() -> Dict[str, Any]:
+    return dict(_LAST_ERROR)
 
 
 def _openai_available() -> bool:
@@ -213,6 +233,7 @@ def openai_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]
             continue
 
     if last_err:
+        _set_last_error("openai", last_err)
         logger.warning("OpenAI structured reply failed across models: %s", last_err)
     return None
 
@@ -271,6 +292,7 @@ def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             continue
 
     if last_err:
+        _set_last_error("groq", last_err)
         logger.warning("Groq structured reply failed across models: %s", last_err)
     return None
 
@@ -322,6 +344,7 @@ def anthropic_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, An
 
         return _coerce_structured(text2, context)
     except Exception as e:
+        _set_last_error("anthropic", e)
         logger.exception("Anthropic structured reply failure: %s", e)
         return None
 

@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 
 from agent import Agent
 from agent_utils import safe_parse_body, redact_sensitive, scam_signal_score
-from llm_adapter import llm_available, current_llm_provider
+from llm_adapter import llm_available, current_llm_provider, last_llm_error
 from learning_engine import persist_learning_snapshot
 
 # ------------------------------------------------------------
@@ -162,6 +162,14 @@ async def honeypot(request: Request):
 
         incoming = str(incoming)
 
+        # optional debug (do not enable by default)
+        debug_llm = False
+        try:
+            q = request.query_params.get("debug_llm", "")
+            debug_llm = str(q).strip().lower() in ("1", "true", "yes") or str(body.get("debug_llm", "")).strip().lower() in ("1", "true", "yes")
+        except Exception:
+            debug_llm = False
+
         session_id = (
             body.get("session_id")
             or body.get("sid")
@@ -178,13 +186,16 @@ async def honeypot(request: Request):
         # ----------------------------------------------------
         if len(session.get("turns", [])) > MAX_TURNS:
             cleanup_session(session_id)
-            return JSONResponse({
+            resp = {
                 "reply": "I'll check this directly with the bank.",
                 "session_id": session_id,
                 "ended": True,
                 "llm_available": llm_available(),
                 "llm_provider": current_llm_provider(),
-            })
+            }
+            if debug_llm:
+                resp["llm_error"] = last_llm_error()
+            return JSONResponse(resp)
 
         # ----------------------------------------------------
         # EXIT HANDLING
@@ -192,14 +203,17 @@ async def honeypot(request: Request):
         if EXIT_RE.search(incoming):
             farewell = random.choice(["ok bye", "cool, bye", "alright bye", "ok, later"])
             cleanup_session(session_id)
-            return JSONResponse({
+            resp = {
                 "reply": farewell,
                 "session_id": session_id,
                 "ended": True,
                 "llm_available": llm_available(),
                 "llm_provider": current_llm_provider(),
                 "ts": time.time(),
-            })
+            }
+            if debug_llm:
+                resp["llm_error"] = last_llm_error()
+            return JSONResponse(resp)
 
         # ----------------------------------------------------
         # AGENT EXECUTION (ISOLATED)
@@ -264,7 +278,7 @@ async def honeypot(request: Request):
         # ----------------------------------------------------
         # RESPONSE (HACKATHON SAFE)
         # ----------------------------------------------------
-        return JSONResponse({
+        resp = {
             "reply": reply,
             "session_id": session_id,
             "incoming_preview": incoming[:120],
@@ -285,20 +299,26 @@ async def honeypot(request: Request):
             "session_summary": output.get("session_summary"),
             "build_id": BUILD_ID,
             "ts": time.time()
-        })
+        }
+        if debug_llm:
+            resp["llm_error"] = last_llm_error()
+        return JSONResponse(resp)
 
     except Exception as e:
         # ----------------------------------------------------
         # ABSOLUTE FAILSAFE (NEVER CRASH)
         # ----------------------------------------------------
         logger.exception("Honeypot error")
-        return JSONResponse({
+        resp = {
             "reply": "Sorry, I'm having trouble. I'll verify this offline.",
             "session_id": str(uuid.uuid4()),
             "error": "handled",
             "llm_available": llm_available(),
             "llm_provider": current_llm_provider(),
-        })
+        }
+        # always include llm error on hard fails; it's already an error response
+        resp["llm_error"] = last_llm_error()
+        return JSONResponse(resp)
 
 
 # ============================================================
