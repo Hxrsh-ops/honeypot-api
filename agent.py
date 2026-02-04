@@ -41,7 +41,14 @@ THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|c
 ASK_PROFILE_RE = re.compile(r"(tell me my name|what'?s my name|what is my name|my name and branch|tell me my branch|my branch name)", re.I)
 MEMORY_ASK_RE = re.compile(r"(what did i (say|tell) (you|u)|what i said before|do you remember|repeat what i said|what did i tell you|what i told you)", re.I)
 TOLD_YOU_RE = re.compile(
-    r"(i told you|already told you|told you before|i already gave|i just gave|i gave you|i mentioned already|i said already)",
+    r"("
+    r"i told (you|u)|already told (you|u)|told (you|u) before|"
+    r"i already (gave|shared|sent)|i just (gave|shared|sent)|"
+    r"i (gave|shared|sent) (you|u)|"
+    r"i mentioned already|i said already|"
+    r"why are you asking (again|that again)|why you asking (again|that again)|"
+    r"you keep asking (again|same thing)"
+    r")",
     re.I,
 )
 BOT_ACCUSATION_RE = re.compile(r"\b(you are a bot|youre a bot|u are a bot|bot)\b", re.I)
@@ -168,7 +175,12 @@ class Agent:
         if signals.get("repetition"):
             return "you already said that; get slightly annoyed; ask for official email/branch/employee id"
         if signals.get("otp") or signals.get("payment") or signals.get("account_request"):
-            return "refuse otp/account stuff. be a bit annoyed. ask for ONE specific proof (branch landline or bank-domain email or employee id). don't loop 'explain'"
+            return (
+                "do NOT share otp/account details. don't be a wall either—sound like a real person under pressure. "
+                "give them a tiny bit of hope like you're checking, but stall and extract info. "
+                "ask for ONE specific proof (bank-domain email / branch landline / employee id) or their link/upi if relevant. "
+                "don't loop 'explain'. acknowledge what they already gave."
+            )
         if memory_hint:
             return "use the provided memory_hint wording. keep it human + short"
         if signals.get("authority") and not any([signals.get("urgency"), signals.get("threat"), signals.get("otp"), signals.get("payment"), signals.get("link")]):
@@ -273,7 +285,8 @@ class Agent:
                 reply = " ".join(reply.split()[:16])
             # length variation for tests/human feel
             if len(reply) < 40 and random.random() < 0.3:
-                reply = f"{reply} {random.choice(['explain properly', 'not sure', 'be clear'])}"
+                # Avoid generic "explain" loops; keep it as light human filler instead.
+                reply = f"{reply} {random.choice(['??', 'bro', 'ya', 'hmm'])}"
 
         # --- enforce no exact repeats (deterministic, not luck-based) ---
         reply = re.sub(r"\s+", " ", (reply or "").strip())
@@ -357,7 +370,7 @@ class Agent:
         if signals.get("memory_probe"):
             return self.memory.answer_memory_question()
         if signals.get("told_you"):
-            return self.memory.answer_profile_question()
+            return self.memory.answer_verification_status()
         if signals.get("transaction_alert"):
             return "if it's not me i'll call the bank now"
         if signals.get("legit_statement"):
@@ -371,17 +384,13 @@ class Agent:
         if signals.get("parcel_scam"):
             return "i'll check the official courier app"
         if signals.get("authority") or signals.get("urgency") or signals.get("threat"):
-            return random.choice([
-                "stop rushing. which branch + official email?",
-                "if you're really bank, send official email + employee id",
-                "no sms no app alert. give branch landline, i'll call",
-            ])
+            return self.memory.answer_verification_status()
         if signals.get("otp"):
             return "otp is private, not sharing"
         if signals.get("payment") or signals.get("account_request"):
             return "not sharing account details on text"
         if "ifsc" in lower or "id" in lower or "employee" in lower:
-            return "send official id or ifsc, then i'll verify"
+            return self.memory.answer_verification_status()
         if signals.get("link"):
             return "link looks fake, send official site"
         if signals.get("confused"):
@@ -404,9 +413,9 @@ class Agent:
 
         # generic fallback
         return random.choice([
-            "this feels off, explain clearly",
-            "not sure about this, explain properly",
-            "hmm, this is odd, explain",
+            "what's this about exactly?",
+            "ok but what's the actual issue?",
+            "hmm. what do you need from me?",
         ])
 
     # ----------------------------
@@ -454,11 +463,62 @@ class Agent:
             memory_hint = self.memory.answer_verification_status()
 
         otp_probe_hint = None
+
+        # --------------------------------------------------
+        # Proof state (prevents "ask same thing again" loops)
+        # --------------------------------------------------
+        facts_now = self.s.get("memory_state", {}).get("facts", {}) or {}
+        proof_state = self.memory.compute_proof_state()
+        verification_asks: List[str] = list(proof_state.get("asks") or [])
+
+        # "scam confirmed" once we see enough signals; used to shift into honeypot mode.
+        score_now = scam_signal_score(incoming)
+        if signals.get("authority"):
+            score_now += 0.2
+        if signals.get("threat") or signals.get("urgency"):
+            score_now += 0.3
+        if signals.get("legit_statement") or signals.get("transaction_alert"):
+            score_now = max(0.0, score_now - 1.0)
+        score_now = min(score_now, 5.0)
+        scam_confirmed = bool(self.s.get("flags", {}).get("scam_confirmed")) or (
+            score_now >= 2.5 and not any([signals.get("legit_statement"), signals.get("transaction_alert")])
+        )
+        if scam_confirmed:
+            self.s.setdefault("flags", {})["scam_confirmed"] = True
+            if intent_hint == "general":
+                intent_hint = "scam_pressure"
+
+        # What intel we still want to extract (helps LLM pick useful questions).
+        profile_now = self.s.get("extracted_profile", {}) or {}
+        intel_targets: List[str] = []
+        if scam_confirmed:
+            if not profile_now.get("url"):
+                intel_targets.append("the link/site they want you to use")
+            if not profile_now.get("upi") and ("upi" in incoming.lower() or signals.get("payment")):
+                intel_targets.append("their upi id")
+            if not profile_now.get("employee_id"):
+                intel_targets.append("their employee id")
+            if not profile_now.get("branch_phone"):
+                intel_targets.append("their branch landline/callback number")
+            if not profile_now.get("email"):
+                intel_targets.append("their bank-domain email")
+        intel_targets = intel_targets[:3]
+
+        # If we already have basic proofs but scam is confirmed, switch into intel-extraction asks
+        # instead of repeating verification over and over.
+        if scam_confirmed and not verification_asks:
+            if not profile_now.get("url"):
+                verification_asks = ["the link you're asking me to open"]
+            else:
+                verification_asks = ["case/ticket id or reference number"]
+
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
+            # First OTP ask: probe for proof (not a generic OTP refusal).
+            ask = verification_asks[0] if verification_asks else "official bank-domain email"
             otp_probe_hint = random.choice([
-                "which branch are you from? send official email and employee id",
-                "if this is real, share your branch and official email",
-                "give branch + official id first, then i'll check",
+                f"otp?? why do you need otp. send {ask} first",
+                f"no otp on text. send {ask}",
+                f"before otp, send {ask}",
             ])
 
         # LLM-first
@@ -467,25 +527,6 @@ class Agent:
         llm_out = None
 
         if llm_available():
-            # help the LLM avoid looping the same asks:
-            facts_now = self.s.get("memory_state", {}).get("facts", {}) or {}
-            verification_asks: List[str] = []
-            if not facts_now.get("branch"):
-                verification_asks.append("branch name (or branch landline)")
-            if not facts_now.get("employee_id"):
-                verification_asks.append("employee id")
-            email_now = facts_now.get("email")
-            if not email_now:
-                verification_asks.append("official bank-domain email (not gmail)")
-            else:
-                try:
-                    domain = str(email_now).split("@", 1)[1].lower().strip() if "@" in str(email_now) else ""
-                    if domain in FREE_EMAIL_DOMAINS:
-                        verification_asks.append("official bank-domain email (not gmail)")
-                except Exception:
-                    pass
-            verification_asks = verification_asks[:2]
-
             directive = self._intent_directive(intent_hint, signals, memory_hint)
             context = {
                 "incoming": incoming,
@@ -495,7 +536,10 @@ class Agent:
                 "memory_hint": memory_hint,
                 "otp_probe_hint": otp_probe_hint,
                 "verification_asks": verification_asks,
-                "facts": self.s.get("memory_state", {}).get("facts", {}),
+                "proof_state": proof_state,
+                "scam_confirmed": scam_confirmed,
+                "intel_targets": intel_targets,
+                "facts": facts_now,
                 "claims": self.s.get("memory_state", {}).get("claims", {}),
                 "contradictions": self.s.get("memory_state", {}).get("contradictions", []),
                 "session_summary": self.s.get("memory_state", {}).get("session_summary", ""),
@@ -528,6 +572,21 @@ class Agent:
             if follow and reply and len(reply) < 140 and follow.lower() not in reply.lower():
                 reply = f"{reply} {follow}".strip()
 
+        # loop-breaker: if the reply asks again for proof we already have, replace with a
+        # short "got it / here's what's missing" line.
+        if reply:
+            rlow = reply.lower()
+            emp_known = bool(facts_now.get("employee_id"))
+            branch_known = bool(facts_now.get("branch"))
+            email_known = bool(facts_now.get("email")) and ("official bank-domain email" not in " ".join(verification_asks))
+
+            asks_emp = bool(re.search(r"\b(employee id|emp id)\b", rlow) and re.search(r"\b(send|share|give)\b", rlow))
+            asks_branch = bool(re.search(r"\bbranch\b", rlow) and re.search(r"\b(send|share|give|which)\b", rlow))
+            asks_official = bool(re.search(r"\bofficial\b", rlow) and re.search(r"\b(id|email|landline)\b", rlow))
+
+            if (asks_emp and emp_known) or (asks_branch and branch_known) or (asks_official and emp_known and branch_known and email_known):
+                reply = self.memory.answer_verification_status()
+
         # enforce memory accuracy when asked directly
         if memory_hint and reply:
             facts = self.s.get("memory_state", {}).get("facts", {})
@@ -541,8 +600,9 @@ class Agent:
             if signals.get("told_you") and memory_hint and len(reply.split()) < 3:
                 reply = memory_hint
 
-        if otp_probe_hint and reply:
-            if not any(k in reply.lower() for k in ["employee", "branch"]):
+        if otp_probe_hint and reply and signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
+            # If the LLM reply forgot to ask for proof, force the OTP probe hint.
+            if not any(k in reply.lower() for k in ["email", "branch", "employee", "landline", "call", "link"]):
                 reply = otp_probe_hint
 
         if not reply:
@@ -551,12 +611,18 @@ class Agent:
         # repetition escalation enforce keywords
         if signals.get("repetition"):
             if not any(k in reply.lower() for k in ["official", "email", "branch", "call", "ticket", "suspicious"]):
-                reply = f"{reply} send official email or branch line".strip()
+                if verification_asks:
+                    reply = f"{reply} send {verification_asks[0]}".strip()
+                else:
+                    reply = f"{reply} what's the issue then?".strip()
 
         # suspicious id/ifsc ensure probe
         lower = incoming.lower()
         if ("ifsc" in lower or "employee" in lower or "id" in lower) and not any(k in reply.lower() for k in ["id", "ifsc", "email", "branch", "call"]):
-            reply = f"{reply} send official id or branch line".strip()
+            if verification_asks:
+                reply = f"{reply} send {verification_asks[0]}".strip()
+            else:
+                reply = f"{reply} send bank-domain email".strip()
 
         allow_variation = True
         if intent_hint in ["smalltalk", "legit_statement", "legit_transaction"]:

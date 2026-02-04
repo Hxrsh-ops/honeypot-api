@@ -12,6 +12,8 @@ BRANCH_SUFFIX_RE = re.compile(r"\b([a-z][a-z\s]{1,30})\s+branch\b", re.I)
 EMAIL_RE = re.compile(r"\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", re.I)
 IFSC_RE = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b")
 EMP_ID_RE = re.compile(r"\b\d{6,}\b")
+LANDLINE_HINT_RE = re.compile(r"(landline|branch\s*line|office\s*line|branch\s*number|office\s*number)", re.I)
+LONG_DIGITS_RE = re.compile(r"\b\d{8,13}\b")
 
 FREE_EMAIL_DOMAINS = {
     "gmail.com",
@@ -61,6 +63,8 @@ def ensure_memory(session: Dict[str, Any]) -> Dict[str, Any]:
         "branch": None,
         "email": None,
         "employee_id": None,
+        # optional (not always available)
+        "branch_phone": None,
         "ifsc": None,
         "phone": None,
         "upi": None,
@@ -160,10 +164,17 @@ class MemoryManager:
                 last_bot = ""
             if "branch" in last_bot.lower():
                 candidate = (text or "").strip().lower()
+                toks = [t for t in re.split(r"\s+", candidate) if t]
+                banned = {
+                    "otp", "share", "send", "email", "mail", "id", "account", "upi", "renew", "suspend",
+                    "suspicious", "activity", "freeze", "blocked", "call", "link", "verify", "help",
+                }
                 if (
                     3 <= len(candidate) <= 24
+                    and len(toks) <= 3
                     and re.fullmatch(r"[a-z][a-z\s]{2,23}", candidate) is not None
                     and candidate not in {"ok", "okay", "yes", "no", "ya", "yeah", "yep", "sure", "exit", "bye"}
+                    and not any(t in banned for t in toks)
                 ):
                     extracted["branch"] = candidate
 
@@ -179,6 +190,12 @@ class MemoryManager:
             if emp:
                 extracted["employee_id"] = emp.group(0)
 
+        # Branch/office landline (often 8-12 digits). Don't echo it back in replies.
+        if LANDLINE_HINT_RE.search(text):
+            m = LONG_DIGITS_RE.search(text)
+            if m:
+                extracted["branch_phone"] = m.group(0)
+
         phone = PHONE_RE.search(text)
         if phone:
             extracted["phone"] = phone.group(0)
@@ -192,6 +209,144 @@ class MemoryManager:
             extracted["url"] = url.group(0)
 
         return extracted
+
+    def _email_domain(self, email: Any) -> str:
+        if not isinstance(email, str) or "@" not in email:
+            return ""
+        return email.split("@", 1)[1].lower().strip()
+
+    def _is_free_email(self, email: Any) -> bool:
+        dom = self._email_domain(email)
+        return bool(dom) and dom in FREE_EMAIL_DOMAINS
+
+    def _is_probably_mobile(self, number: Any) -> bool:
+        # India mobile numbers are typically 10 digits starting 6-9 (optionally prefixed with +91 which we won't store here).
+        s = str(number or "").strip()
+        digits = re.sub(r"\D", "", s)
+        return bool(
+            re.fullmatch(r"[6-9]\d{9}", digits)  # 10-digit mobile
+            or re.fullmatch(r"0[6-9]\d{9}", digits)  # 0 + mobile
+            or re.fullmatch(r"91[6-9]\d{9}", digits)  # 91 + mobile
+            or re.fullmatch(r"[6-9]\d{10}", digits)  # suspicious 11-digit starting like mobile
+        )
+
+    def _branch_is_ambiguous(self, branch: Any) -> bool:
+        b = (str(branch or "").strip().lower())
+        if not b:
+            return False
+        # Single-token "city" answers are often ambiguous for "branch name".
+        toks = [t for t in re.split(r"\s+", b) if t]
+        return len(toks) == 1 and len(b) <= 14
+
+    def compute_proof_state(self) -> Dict[str, Any]:
+        """
+        Determine what the other party has already provided and what we still want.
+        This helps avoid looping the same asks.
+        """
+        facts = self.mem.get("facts", {}) or {}
+        bank = facts.get("bank")
+        branch = facts.get("branch")
+        email = facts.get("email")
+        emp = facts.get("employee_id")
+        branch_phone = facts.get("branch_phone")
+
+        email_domain = self._email_domain(email)
+        free_email = self._is_free_email(email)
+        mobile_like_landline = self._is_probably_mobile(branch_phone)
+        branch_ambiguous = self._branch_is_ambiguous(branch)
+
+        provided: List[str] = []
+        if bank:
+            provided.append("bank")
+        if branch:
+            provided.append("branch")
+        if emp:
+            provided.append("employee id")
+        if email:
+            provided.append("email")
+        if branch_phone:
+            provided.append("branch landline")
+
+        missing: List[str] = []
+        suspicious: List[str] = []
+
+        # We prefer a bank-domain email as a strong proof.
+        if not email:
+            missing.append("official bank-domain email (not gmail)")
+        elif free_email:
+            suspicious.append("free_email")
+            missing.append("official bank-domain email (not gmail)")
+
+        # Branch landline helps (and mobile-looking "landline" is suspicious).
+        if not branch_phone:
+            missing.append("branch landline (not mobile)")
+        elif mobile_like_landline:
+            suspicious.append("landline_looks_mobile")
+            missing.append("branch landline (not mobile)")
+
+        # Branch name: if they only gave a city, ask for a real branch name.
+        if not branch:
+            missing.append("branch name (not just city)")
+        elif branch_ambiguous:
+            suspicious.append("branch_ambiguous")
+            missing.append("branch name (not just city)")
+
+        if not emp:
+            missing.append("employee id")
+
+        asks = missing[:2]
+
+        return {
+            "provided": provided,
+            "missing": missing,
+            "suspicious": suspicious,
+            "asks": asks,
+            "email_domain": email_domain,
+        }
+
+    def _should_upgrade_fact(self, field: str, prev: Any, new: Any, facts: Dict[str, Any]) -> bool:
+        """
+        Facts are "best known" values. If we later receive a better value,
+        allow upgrading (e.g., gmail -> bank-domain email).
+        """
+        if not prev:
+            return True
+        if not new or prev == new:
+            return False
+
+        if field == "email":
+            # Prefer non-free domains over gmail/outlook/etc.
+            prev_free = self._is_free_email(prev)
+            new_free = self._is_free_email(new)
+            if prev_free and not new_free:
+                return True
+
+            # If we know a bank keyword, prefer an email domain containing it.
+            bank = str(facts.get("bank") or "").lower().strip()
+            prev_dom = self._email_domain(prev)
+            new_dom = self._email_domain(new)
+            if bank and bank in new_dom and bank not in prev_dom:
+                return True
+            return False
+
+        if field == "branch":
+            # Prefer longer/more specific branch names over short city-only values.
+            prev_s = str(prev).strip()
+            new_s = str(new).strip()
+            if len(new_s) > len(prev_s) + 3:
+                return True
+            if self._branch_is_ambiguous(prev_s) and not self._branch_is_ambiguous(new_s):
+                return True
+            return False
+
+        if field == "branch_phone":
+            # Prefer a non-mobile-looking landline if previously we only had a mobile-like number.
+            if self._is_probably_mobile(prev) and not self._is_probably_mobile(new):
+                return True
+            return False
+
+        # Default: do not overwrite stable facts like name/bank/employee_id.
+        return False
 
     def merge_extractions(self, extracted: Dict[str, Any], source: str = "regex"):
         if not extracted:
@@ -214,7 +369,8 @@ class MemoryManager:
                     "source": source,
                 })
             claims[k] = v
-            if not facts.get(k):
+            prev_fact = facts.get(k)
+            if not prev_fact or self._should_upgrade_fact(k, prev_fact, v, facts):
                 facts[k] = v
 
         self.mem["facts"] = facts
@@ -223,7 +379,7 @@ class MemoryManager:
 
         profile = self.s.get("extracted_profile", {})
         for k, v in facts.items():
-            if k in profile and not profile.get(k):
+            if k in profile and v:
                 profile[k] = v
         self.s["extracted_profile"] = profile
         self.s["claims"] = claims
@@ -282,23 +438,20 @@ class MemoryManager:
         branch = facts.get("branch")
         email = facts.get("email")
         emp = facts.get("employee_id")
+        branch_phone = facts.get("branch_phone")
 
         missing: List[str] = []
-        if not branch:
-            missing.append("branch name / branch landline")
-        if not emp:
-            missing.append("employee id")
 
-        free_email = False
-        email_domain = ""
-        if isinstance(email, str) and "@" in email:
-            email_domain = email.split("@", 1)[1].lower().strip()
-            free_email = email_domain in FREE_EMAIL_DOMAINS
+        # Use the same proof logic used by the agent to avoid loops.
+        proof = self.compute_proof_state()
+        free_email = "free_email" in (proof.get("suspicious") or [])
+        landline_mobile = "landline_looks_mobile" in (proof.get("suspicious") or [])
+        branch_ambiguous = "branch_ambiguous" in (proof.get("suspicious") or [])
+        email_domain = str(proof.get("email_domain") or "")
 
-        if not email:
-            missing.append("official bank-domain email")
-        elif free_email:
-            missing.append("bank-domain email (not gmail etc)")
+        # Friendly-but-skeptical prioritization.
+        if proof.get("missing"):
+            missing = list(proof["missing"])
 
         who = "you"
         if name:
@@ -309,9 +462,21 @@ class MemoryManager:
             # keep it short and a bit annoyed
             if free_email and email_domain:
                 return random.choice([
-                    f"ok {who}, i saw the id + all, but that mail is {email_domain}. not official. send {ask}",
-                    f"bro that's a {email_domain} mail. need {ask}",
-                    f"ok but gmail isn't bank mail. send {ask}",
+                    f"ok {who}, i saw the id/branch stuff but that mail is {email_domain}. not official. send {ask}",
+                    f"bro that's a {email_domain} mail. send {ask}",
+                    f"ok but that's not bank mail. send {ask}",
+                ])
+            if landline_mobile and "landline" in ask:
+                return random.choice([
+                    f"that looks like a mobile number. send {ask}",
+                    f"bro that's not a branch landline. send {ask}",
+                    f"nah, need the real branch landline. send {ask}",
+                ])
+            if branch_ambiguous and "branch name" in ask:
+                return random.choice([
+                    f"you said {branch}, that's just city. send {ask}",
+                    f"ok {branch} where exactly? send {ask}",
+                    f"city isn't branch name. send {ask}",
                 ])
             return random.choice([
                 f"you said you're from {bank} bank and gave some details. still need {ask}" if bank else f"you said you're from the bank and gave some details. still need {ask}",

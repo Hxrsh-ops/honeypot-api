@@ -8,9 +8,11 @@ import argparse
 from urllib.parse import urlparse
 
 # use local default for testing/development
-RAW_API_URL = os.getenv("HONEYPOT_URL", "https://web-production-ae3d7.up.railway.app/honeypot")
+RAW_API_URL = os.getenv("HONEYPOT_URL", "https://spotless-maggi-hxrsh-ops-36f954ea.koyeb.app/honeypot")
 API_KEY = os.getenv("HONEYPOT_API_KEY", "")
 AUTOSTART = os.getenv("AUTOSTART_SERVER", "1")  # set to "0" to disable auto-start
+BOT_LABEL = os.getenv("HONEYPOT_BOT_LABEL", "Asha")
+REQ_TIMEOUT = float(os.getenv("HONEYPOT_TIMEOUT", "30"))
 
 session_id = str(uuid.uuid4())
 
@@ -123,7 +125,7 @@ def _run_script(messages, delay_sec=10.0, log_path=None):
             "session_id": session_id
         }
         try:
-            r = requests.post(API_URL, json=payload, headers=headers, timeout=10)
+            r = requests.post(API_URL, json=payload, headers=headers, timeout=REQ_TIMEOUT)
             try:
                 data = r.json()
                 bot = data.get("reply")
@@ -131,9 +133,19 @@ def _run_script(messages, delay_sec=10.0, log_path=None):
                     bot = f"[no reply field] {data}"
             except Exception:
                 bot = r.text
-        except Exception as e:
-            bot = f"[error] {e}"
-        line = f"You: {msg}\nBot: {bot}\n"
+        except requests.exceptions.Timeout:
+            # Retry once; LLM calls can spike.
+            try:
+                r = requests.post(API_URL, json=payload, headers=headers, timeout=REQ_TIMEOUT * 2)
+                data = r.json()
+                bot = data.get("reply") or f"[no reply field] {data}"
+            except Exception:
+                bot = "(no reply - server busy)"
+        except requests.exceptions.ConnectionError:
+            bot = "(network glitch)"
+        except Exception:
+            bot = "(error)"
+        line = f"You: {msg}\n{BOT_LABEL}: {bot}\n"
         print(line)
         if log_path:
             with open(log_path, "a", encoding="utf-8") as f:
@@ -172,20 +184,21 @@ def main():
         }
 
         try:
-            r = requests.post(API_URL, json=payload, headers=headers, timeout=10)
+            r = requests.post(API_URL, json=payload, headers=headers, timeout=REQ_TIMEOUT)
             try:
                 data = r.json()
                 bot = data.get("reply")
                 if bot is None:
                     bot = f"[no reply field] {data}"
-                print("Bot:", bot)
+                print(f"{BOT_LABEL}:", bot)
             except Exception:
-                print("Bot (non-json):", r.text)
-        except requests.exceptions.ConnectionError as e:
-            print("Connection error:", e)
-            print("Make sure the API is running at", API_URL)
-        except Exception as e:
-            print("Error:", e)
+                print(f"{BOT_LABEL} (non-json):", r.text)
+        except requests.exceptions.Timeout:
+            print(f"{BOT_LABEL}: (no reply - server busy)")
+        except requests.exceptions.ConnectionError:
+            print(f"{BOT_LABEL}: (network glitch)")
+        except Exception:
+            print(f"{BOT_LABEL}: (error)")
 
 
 if __name__ == "__main__":
