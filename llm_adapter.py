@@ -24,6 +24,8 @@ def _clean_key(value: str) -> str:
     Railway/env var UIs sometimes end up with:
     - accidental surrounding quotes
     - a pasted `Bearer ...` prefix
+    - accidentally pasting a whole KEY=VALUE line (we extract the actual key)
+    - a leading '=' (common when pasting `KEY = value`)
     - trailing newlines/spaces
     """
     v = (value or "").strip()
@@ -32,6 +34,23 @@ def _clean_key(value: str) -> str:
     if v.lower().startswith("bearer "):
         v = v[7:].strip()
     # strip a single pair of surrounding quotes
+    if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+        v = v[1:-1].strip()
+
+    # Some users paste `NAME=secret` or even `NAME = secret` into the VALUE box.
+    # Heuristically extract known key prefixes if present anywhere.
+    candidates = ["gsk_", "sk-ant-", "sk-"]
+    for pref in candidates:
+        idx = v.find(pref)
+        if idx > 0:
+            v = v[idx:]
+            break
+
+    # Leading '=' can happen when pasting `KEY = value` and only the value is captured.
+    if v.startswith("="):
+        v = v.lstrip("=").strip()
+
+    # one more quote strip in case we extracted from a quoted assignment
     if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
         v = v[1:-1].strip()
     return v
