@@ -339,6 +339,8 @@ class Agent:
                 memory_hint = self.memory.answer_profile_question()
             else:
                 memory_hint = self.memory.answer_memory_question()
+                if memory_hint and len(memory_hint.split()) < 12:
+                    memory_hint = f"{memory_hint} — that's all i saw"
 
         otp_probe_hint = None
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
@@ -427,6 +429,8 @@ class Agent:
 
         allow_variation = True
         if intent_hint in ["smalltalk", "legit_statement", "legit_transaction"]:
+            allow_variation = False
+        if signals.get("ask_profile") or signals.get("memory_probe") or signals.get("told_you"):
             allow_variation = False
         reply = self._unique_reply(self._guardrails(reply), allow_variation=allow_variation)
         self.memory.add_bot_message(reply)
