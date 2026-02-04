@@ -162,7 +162,7 @@ class MemoryManager:
                 candidate = (text or "").strip().lower()
                 if (
                     3 <= len(candidate) <= 24
-                    and re.fullmatch(r"[a-z][a-z\\s]{2,23}", candidate) is not None
+                    and re.fullmatch(r"[a-z][a-z\s]{2,23}", candidate) is not None
                     and candidate not in {"ok", "okay", "yes", "no", "ya", "yeah", "yep", "sure", "exit", "bye"}
                 ):
                     extracted["branch"] = candidate

@@ -226,8 +226,8 @@ class Agent:
             return text
 
         # Ends with a dangling stopword or fragment.
-        if not re.search(r"(\\bi want to\\b|\\bcan you give me\\b|\\bgive me your\\b)$", text, re.I) and not re.search(
-            r"\\b(to|the|a|an|of|for|from|with|and|or|but|so|because)\\b$",
+        if not re.search(r"(\bi want to\b|\bcan you give me\b|\bgive me your\b)$", text, re.I) and not re.search(
+            r"\b(to|the|a|an|of|for|from|with|and|or|but|so|because)\b$",
             text,
             re.I,
         ):
