@@ -81,6 +81,7 @@ ASSISTANTY_RE = re.compile(
 )
 CONTRADICTION_TALK_RE = re.compile(r"\b(earlier you said|but now|now you're saying)\b", re.I)
 PROMPT_LEAK_RE = re.compile(r"\b(proof_state|verification_asks|intel_targets|intent_hint|session_summary|mood_delta|extractions?)\b", re.I)
+DISMISSIVE_RE = re.compile(r"\b(i\s*don'?t\s*care|idc|not my problem)\b", re.I)
 
 
 class Agent:
@@ -764,6 +765,9 @@ class Agent:
         # short "got it / here's what's missing" line.
         if reply:
             rlow = reply.lower()
+            if DISMISSIVE_RE.search(rlow):
+                reply = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                rlow = reply.lower()
             missing_low = " ".join([str(m).lower() for m in (proof_state.get("missing") or [])])
             need_email = ("bank-domain email" in missing_low) or ("bank email" in missing_low)
             need_landline = "landline" in missing_low
