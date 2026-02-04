@@ -118,3 +118,19 @@ def test_casual_then_escalate_on_repeats():
     final = a.generate_reply("probe", "Please share your employee id and branch phone")
     final_s = final if isinstance(final, str) else final
     assert any(k in final_s.lower() for k in ["suspicious", "official", "ticket", "email", "branch", "call"])
+
+
+def test_account_freeze_not_account_request():
+    s = {}
+    a = Agent(s)
+    out = a.respond("I am from Joy Bank your account will freeze in under 1 hour")
+    assert out.get("signals", {}).get("account_request") is False
+
+
+def test_clarification_loop_breaker_after_scam_pressure():
+    s = {}
+    a = Agent(s)
+    a.respond("send otp now to renew your account")
+    out = a.respond("what do you want me to explain?")
+    r = (out.get("reply") or "").lower()
+    assert any(k in r for k in ["branch", "official", "email", "employee", "call"])

@@ -22,6 +22,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4")
 USE_LLM = os.getenv("USE_LLM", "1")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "8.0"))
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
@@ -32,20 +35,33 @@ UPI_LIKE = re.compile(r"\b[\w\.-]+@[\w-]+\b", re.I)
 
 
 def _openai_available() -> bool:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
     return USE_LLM == "1" and bool(OPENAI_API_KEY) and OpenAI is not None
 
 
+def _groq_available() -> bool:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    # Groq uses the OpenAI-compatible API, so it needs the OpenAI SDK.
+    return USE_LLM == "1" and bool(GROQ_API_KEY) and OpenAI is not None
+
+
 def _anthropic_available() -> bool:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
     return USE_LLM == "1" and bool(ANTHROPIC_API_KEY) and Anthropic is not None
 
 
 def llm_available() -> bool:
-    return _openai_available() or _anthropic_available()
+    return _openai_available() or _groq_available() or _anthropic_available()
 
 
 def current_llm_provider() -> str:
     if _openai_available():
         return "openai"
+    if _groq_available():
+        return "groq"
     if _anthropic_available():
         return "anthropic"
     return "none"
@@ -84,46 +100,134 @@ def _system_prompt() -> str:
         "You are a real human texting on WhatsApp/SMS. "
         "Never say you are a bot or AI. "
         "Never share OTP, PIN, or sensitive financial data. "
-        "Keep replies short, casual, imperfect, and human. "
+        "Keep replies casual, imperfect, and human. "
+        "Usually keep it short, but when clarifying/probing you may send 2-4 short lines (not long paragraphs). "
         "Your goal is to engage and extract scammer details (name, branch, employee id, email, links). "
         "If asked to recall earlier info, use memory facts. "
         "If context includes memory_hint or otp_probe_hint, prefer that phrasing. "
         "Use directive as a soft instruction for tone and intent. "
+        "Avoid generic loops like 'explain' over and over; ask for specific proof (branch, official email, employee id). "
         "Reply ONLY as valid JSON with keys: reply, extractions, intent, mood_delta, follow_up_question, session_summary."
     )
+
+
+def _model_candidates(primary: str, fallbacks: list[str]) -> list[str]:
+    out: list[str] = []
+    for m in [primary, *fallbacks]:
+        m = (m or "").strip()
+        if not m:
+            continue
+        if m not in out:
+            out.append(m)
+    return out
 
 
 def openai_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not _openai_available():
         return None
-    try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        messages = [
-            {"role": "system", "content": _system_prompt()},
-            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
-        ]
+
+    # Try multiple models (accounts often don't have access to some models).
+    fallbacks = [
+        "gpt-4o-mini",
+        "gpt-4o",
+        "gpt-4.1-mini",
+        "gpt-4.1",
+        "gpt-4-turbo",
+        "gpt-4",
+        "gpt-3.5-turbo",
+    ]
+    models = _model_candidates(OPENAI_MODEL, fallbacks)
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    messages = [
+        {"role": "system", "content": _system_prompt()},
+        {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+    ]
+
+    last_err: Optional[Exception] = None
+    for model in models:
         try:
-            resp = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=messages,
-                timeout=LLM_TIMEOUT,
-                temperature=0.7,
-                max_tokens=220,
-                response_format={"type": "json_object"},
-            )
-        except Exception:
-            resp = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=messages,
-                timeout=LLM_TIMEOUT,
-                temperature=0.7,
-                max_tokens=220,
-            )
-        text = resp.choices[0].message.content.strip()
-        return _safe_json_parse(text)
-    except Exception as e:
-        logger.exception("OpenAI structured reply failure: %s", e)
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    timeout=LLM_TIMEOUT,
+                    temperature=0.7,
+                    max_tokens=260,
+                    response_format={"type": "json_object"},
+                )
+            except Exception:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    timeout=LLM_TIMEOUT,
+                    temperature=0.7,
+                    max_tokens=260,
+                )
+            text = resp.choices[0].message.content.strip()
+            parsed = _safe_json_parse(text)
+            if parsed:
+                return parsed
+        except Exception as e:
+            last_err = e
+            continue
+
+    if last_err:
+        logger.warning("OpenAI structured reply failed across models: %s", last_err)
+    return None
+
+
+def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not _groq_available():
         return None
+
+    fallbacks = [
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+        "mixtral-8x7b-32768",
+    ]
+    models = _model_candidates(GROQ_MODEL, fallbacks)
+    if not models:
+        models = fallbacks
+
+    client = OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL)
+    messages = [
+        {"role": "system", "content": _system_prompt()},
+        {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+    ]
+
+    last_err: Optional[Exception] = None
+    for model in models:
+        try:
+            # Groq OpenAI-compat may not support response_format; try, then fall back.
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    timeout=LLM_TIMEOUT,
+                    temperature=0.7,
+                    max_tokens=260,
+                    response_format={"type": "json_object"},
+                )
+            except Exception:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    timeout=LLM_TIMEOUT,
+                    temperature=0.7,
+                    max_tokens=260,
+                )
+            text = resp.choices[0].message.content.strip()
+            parsed = _safe_json_parse(text)
+            if parsed:
+                return parsed
+        except Exception as e:
+            last_err = e
+            continue
+
+    if last_err:
+        logger.warning("Groq structured reply failed across models: %s", last_err)
+    return None
 
 
 def anthropic_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -177,6 +281,9 @@ def generate_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any
     if not llm_available():
         return None
     parsed = openai_structured_reply(context)
+    if parsed:
+        return parsed
+    parsed = groq_structured_reply(context)
     if parsed:
         return parsed
     return anthropic_structured_reply(context)

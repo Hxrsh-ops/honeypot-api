@@ -11,12 +11,15 @@ Railway deploy:
   - HONEYPOT_API_KEY (optional) -- API key enforced for endpoints if set
   - OPENAI_API_KEY (optional) -- enable OpenAI primary
   - OPENAI_MODEL (optional) -- default gpt-4
+  - GROQ_API_KEY (optional) -- enable Groq fallback (OpenAI-compatible)
+  - GROQ_BASE_URL (optional) -- default https://api.groq.com/openai/v1
+  - GROQ_MODEL (optional) -- optional override (otherwise we try a few common Groq model ids)
   - ANTHROPIC_API_KEY (optional) -- enable Anthropic fallback
   - ANTHROPIC_MODEL (optional) -- default claude-sonnet-4-20250514
   - ANTHROPIC_VERSION (optional) -- default 2023-06-01
   - USE_LLM (1 to enable LLM usage)
   - LLM_REPHRASE_PROB (0.0-1.0) optional paraphrase softening if replies feel robotic
   - LOG_LEVEL (e.g., INFO/DEBUG)
-- Fallback routing: OpenAI first; on error/invalid JSON, Anthropic is tried.
+- Fallback routing: OpenAI first; on error/invalid JSON, Groq is tried; if that fails, Anthropic is tried.
 - /honeypot response includes optional debug fields: llm_available, llm_provider, ended.
 - Push to GitHub and connect the repo to Railway. CI runs tests on PRs.

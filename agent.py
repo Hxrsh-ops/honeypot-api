@@ -35,7 +35,7 @@ OTP_RE = re.compile(r"\b(otp|one[-\s]?time\s?password|verification\s?code)\b", r
 URGENT_RE = re.compile(r"\b(urgent|immediate|within|expire|freez|frozen|blocked|suspend|suspension)\b", re.I)
 AUTH_RE = re.compile(r"\b(bank|rbi|world\s?bank|sbi|hdfc|icici|axis|fraud|security|official|manager)\b", re.I)
 PAY_RE = re.compile(r"\b(upi|transfer|pay|payment|refund|charge|fee|ifsc|beneficiary|amount|transaction)\b", re.I)
-ACCOUNT_REQ_RE = re.compile(r"\b(account number|a/c|acct|account)\b", re.I)
+ACCOUNT_REQ_RE = re.compile(r"\b(a/c|acct|account\s*(?:number|no\.?)|acc\s*no\.?)\b", re.I)
 THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|court)\b", re.I)
 
 ASK_PROFILE_RE = re.compile(r"(tell me my name|what'?s my name|what is my name|my name and branch|tell me my branch|my branch name)", re.I)
@@ -43,6 +43,8 @@ MEMORY_ASK_RE = re.compile(r"(what did i (say|tell) (you|u)|what i said before|d
 TOLD_YOU_RE = re.compile(r"(i told you|already told you|told you before)", re.I)
 BOT_ACCUSATION_RE = re.compile(r"\b(you are a bot|youre a bot|u are a bot|bot)\b", re.I)
 CONFUSED_RE = re.compile(r"\b(confused|huh|what\?)\b", re.I)
+CLARIFICATION_RE = re.compile(r"(what do you want me to explain|explain what|what exactly|what should i explain|explain\??\s*what)", re.I)
+TYPING_ACCUSATION_RE = re.compile(r"(typing.*off|your typing.*off|typing feels off|you type.*bot|typing feels.*bot)", re.I)
 
 LEGIT_STATEMENT_RE = re.compile(r"(statement is ready|monthly statement|e-statement|no action needed)", re.I)
 TRANSACTION_ALERT_RE = re.compile(r"(transaction of|debited|credited|if not initiated)", re.I)
@@ -119,6 +121,8 @@ class Agent:
             "told_you": bool(TOLD_YOU_RE.search(lower)),
             "bot_accusation": bool(BOT_ACCUSATION_RE.search(lower)),
             "confused": bool(CONFUSED_RE.search(lower)),
+            "clarification_request": bool(CLARIFICATION_RE.search(lower)),
+            "typing_accusation": bool(TYPING_ACCUSATION_RE.search(lower)),
             "legit_statement": bool(LEGIT_STATEMENT_RE.search(text or "")),
             "transaction_alert": bool(TRANSACTION_ALERT_RE.search(text or "")),
             "social_impersonation": bool(SOCIAL_IMPERSONATION_RE.search(lower)),
@@ -218,8 +222,8 @@ class Agent:
         reply = redact_sensitive(reply)
         # keep short-ish
         reply = reply.strip()
-        if len(reply) > 200:
-            reply = reply[:200]
+        if len(reply) > 450:
+            reply = reply[:450]
         return reply
 
     def _unique_reply(self, reply: str, allow_variation: bool = True) -> str:
@@ -257,6 +261,33 @@ class Agent:
 
         if signals.get("bot_accusation"):
             return "nah, just tell me properly"
+        if signals.get("typing_accusation"):
+            return random.choice([
+                "typing off? bro just say what you want",
+                "im typing normal lol. what is it?",
+                "what? im typing fine. what's this about",
+            ])
+        if signals.get("clarification_request"):
+            pressure = any([
+                signals.get("otp"),
+                signals.get("payment"),
+                signals.get("link"),
+                signals.get("authority"),
+                signals.get("urgency"),
+                signals.get("threat"),
+                signals.get("account_request"),
+                self.s.get("flags", {}).get("otp_ask_count", 0) > 0,
+            ])
+            if pressure:
+                return random.choice([
+                    "explain why you need otp + which branch you're from + official email",
+                    "ok explain what you want. send employee id + branch landline",
+                    "why otp? tell branch + official email + your id, then talk",
+                ])
+            return random.choice([
+                "explain what exactly?",
+                "about what? just say it straight",
+            ])
         if signals.get("ask_profile"):
             return self.memory.answer_profile_question()
         if signals.get("memory_probe"):
@@ -275,6 +306,12 @@ class Agent:
             return "real jobs don't ask money"
         if signals.get("parcel_scam"):
             return "i'll check the official courier app"
+        if signals.get("authority") or signals.get("urgency") or signals.get("threat"):
+            return random.choice([
+                "stop rushing. which branch + official email?",
+                "if you're really bank, send official email + employee id",
+                "no sms no app alert. give branch landline, i'll call",
+            ])
         if signals.get("otp"):
             return "otp is private, not sharing"
         if signals.get("payment") or signals.get("account_request"):
@@ -284,12 +321,22 @@ class Agent:
         if signals.get("link"):
             return "link looks fake, send official site"
         if signals.get("confused"):
-            return "same, explain properly"
+            if any([signals.get("otp"), signals.get("payment"), signals.get("authority"), signals.get("urgency")]):
+                return "huh? why otp. send official email/branch and explain"
+            return "huh? what exactly"
 
         if signals.get("smalltalk"):
             return "hey, what's this about"
         if signals.get("thanks"):
             return "ok"
+
+        # if OTP/scam was already in the thread, keep asking for verification instead of looping "explain"
+        if self.s.get("flags", {}).get("otp_ask_count", 0) > 0 and not any([signals.get("legit_statement"), signals.get("transaction_alert")]):
+            return random.choice([
+                "ok then send branch + official email + your id",
+                "give employee id + branch landline. i'll verify",
+                "send official email from bank domain, then talk",
+            ])
 
         # generic fallback
         return random.choice([
@@ -308,6 +355,11 @@ class Agent:
 
         signals = self._detect_signals(incoming)
         intent_hint = self._intent_hint(signals)
+
+        # keep thread continuity: if OTP/scam was already in play, don't fall back to "general"
+        if intent_hint == "general" and self.s.get("flags", {}).get("otp_ask_count", 0) > 0:
+            if not any([signals.get("legit_statement"), signals.get("transaction_alert"), signals.get("smalltalk")]):
+                intent_hint = "scam_pressure"
 
         if signals.get("otp"):
             self.s["flags"]["otp_ask_count"] = self.s["flags"].get("otp_ask_count", 0) + 1
@@ -430,7 +482,7 @@ class Agent:
         allow_variation = True
         if intent_hint in ["smalltalk", "legit_statement", "legit_transaction"]:
             allow_variation = False
-        if signals.get("ask_profile") or signals.get("memory_probe") or signals.get("told_you"):
+        if signals.get("ask_profile") or signals.get("memory_probe") or signals.get("told_you") or signals.get("clarification_request") or signals.get("typing_accusation"):
             allow_variation = False
         reply = self._unique_reply(self._guardrails(reply), allow_variation=allow_variation)
         self.memory.add_bot_message(reply)
