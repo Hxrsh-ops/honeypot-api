@@ -164,9 +164,10 @@ def current_llm_provider() -> str:
 def redact_sensitive(text: str) -> str:
     if not text:
         return text
-    text = PHONE_RE.sub("(phone)", text)
-    text = DIGIT_SEQ.sub("[redacted]", text)
-    text = UPI_LIKE.sub("(UPI)", text)
+    # Keep masking human-ish; avoid botty "[redacted]" tokens in replies.
+    text = PHONE_RE.sub("xxxx", text)
+    text = DIGIT_SEQ.sub("xxxx", text)
+    text = UPI_LIKE.sub("(upi)", text)
     return text
 
 

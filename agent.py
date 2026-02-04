@@ -32,7 +32,10 @@ DEFAULT_REPLY = "ok"
 LLM_REPHRASE_PROB = float(os.getenv("LLM_REPHRASE_PROB", "0.2"))
 
 OTP_RE = re.compile(r"\b(otp|one[-\s]?time\s?password|verification\s?code)\b", re.I)
-URGENT_RE = re.compile(r"\b(urgent|immediate|within|expire|freez|frozen|blocked|suspend|suspension)\b", re.I)
+URGENT_RE = re.compile(
+    r"\b(urgent|immediate|within|expire|freez(?:e|ing|ed)?|frozen|block(?:ed|ing)?|suspend(?:ed|ing|ion)?|disable(?:d)?|deactivat(?:e|ed))\b",
+    re.I,
+)
 AUTH_RE = re.compile(r"\b(bank|rbi|world\s?bank|sbi|hdfc|icici|axis|fraud|security|official|manager)\b", re.I)
 PAY_RE = re.compile(r"\b(upi|transfer|pay|payment|refund|charge|fee|ifsc|beneficiary|amount|transaction)\b", re.I)
 ACCOUNT_REQ_RE = re.compile(r"\b(a/c|acct|account\s*(?:number|no\.?)|acc\s*no\.?)\b", re.I)
@@ -373,7 +376,7 @@ class Agent:
         # skip if high token overlap (LLM often repeats itself)
         rtoks = set(re.findall(r"[a-z0-9]+", rlow))
         ftoks = set(re.findall(r"[a-z0-9]+", flow))
-        if rtoks and (len(rtoks & ftoks) / max(1, len(ftoks))) >= 0.65:
+        if rtoks and (len(rtoks & ftoks) / max(1, len(ftoks))) >= 0.50:
             return r
         if len(r) > 160:
             return r
@@ -798,7 +801,7 @@ class Agent:
                 reply = memory_hint
             if signals.get("ask_profile") and bank and bank.lower() not in reply.lower():
                 reply = memory_hint
-            if signals.get("told_you") and memory_hint and len(reply.split()) < 3:
+            if signals.get("told_you") and memory_hint:
                 reply = memory_hint
 
         if otp_probe_hint and reply and signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
