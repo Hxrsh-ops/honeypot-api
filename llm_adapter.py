@@ -209,6 +209,7 @@ def _system_prompt() -> str:
         "If context includes proof_state.provided/missing, DO NOT ask again for something already provided; "
         "instead ask for the next missing proof. If they claim 'i already gave it', respond with what you got "
         "and what's still missing (human tone). "
+        "Never mention internal field names like 'proof_state', 'verification_asks', 'intel_targets', or 'intent_hint'. "
         "If context includes honeypot_stage: "
         "stage 1 = skeptical; stage 2+ = play along a bit (act worried, say you're checking) while extracting link/ids; "
         "stage 4+ = get annoyed/tired and push back harder. "

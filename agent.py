@@ -80,6 +80,7 @@ ASSISTANTY_RE = re.compile(
     re.I,
 )
 CONTRADICTION_TALK_RE = re.compile(r"\b(earlier you said|but now|now you're saying)\b", re.I)
+PROMPT_LEAK_RE = re.compile(r"\b(proof_state|verification_asks|intel_targets|intent_hint|session_summary|mood_delta|extractions?)\b", re.I)
 
 
 class Agent:
@@ -749,9 +750,11 @@ class Agent:
             else:
                 self.memory.update_summary(incoming, reply or "")
 
-            follow = llm_out.get("follow_up_question")
-            if follow and reply:
-                reply = self._maybe_append_followup(str(reply), str(follow))
+            # Don't append follow_up_question to reply: open models sometimes put meta/prompt artifacts there.
+
+        # Guardrail: if the model leaks internal prompt/context tokens, drop to a safe fallback.
+        if reply and PROMPT_LEAK_RE.search(str(reply)):
+            reply = otp_probe_hint or memory_hint or self._fallback_reply(incoming, signals)
 
         # loop-breaker: if the reply asks again for proof we already have, replace with a
         # short "got it / here's what's missing" line.
