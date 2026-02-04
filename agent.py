@@ -68,7 +68,7 @@ STATEMENT_ALERT_RE = re.compile(r"(statement is ready|monthly statement|e-statem
 SOCIAL_IMPERSONATION_RE = re.compile(r"\b(mom|dad|mother|father|cousin|bro|brother|sis|sister|uncle|aunt|aunty|wife|husband|son|daughter|boss|manager|colleague|friend)\b", re.I)
 SMALLTALK_RE = re.compile(r"\b(hi|hello|hey|how are you|what's up|whats up|sup|good morning|good night|good evening)\b", re.I)
 THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
-JOB_SCAM_RE = re.compile(r"(job offer|offer letter|pay.*(fee|deposit)|training fee|placement fee)", re.I)
+JOB_SCAM_RE = re.compile(r"(job offer|offer letter|training fee|placement fee)", re.I)
 MONEY_HELP_RE = re.compile(r"(need money|loan|borrow|transfer|send.*money|2k|5k|urgent cash)", re.I)
 PARCEL_SCAM_RE = re.compile(r"(parcel|delivery|courier|re-delivery|customs fee|delivery fee)", re.I)
 
