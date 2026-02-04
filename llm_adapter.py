@@ -74,6 +74,7 @@ CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.I)
 
 # Best-effort debug hook (safe to expose only when explicitly requested).
 _LAST_ERROR: Dict[str, Any] = {"provider": "none", "type": "", "error": "", "ts": 0.0}
+_GROQ_WORKING_MODEL: str = ""
 
 
 def _set_last_error(provider: str, err: Exception):
@@ -221,6 +222,34 @@ def _model_candidates(primary: str, fallbacks: list[str]) -> list[str]:
     return out
 
 
+def _looks_rate_limited(err: Exception) -> bool:
+    s = str(err or "")
+    if not s:
+        return False
+    s_low = s.lower()
+    return ("429" in s) or ("too many requests" in s_low) or ("rate limit" in s_low) or ("ratelimit" in s_low)
+
+
+def _new_openai_client(**kwargs):
+    """
+    The OpenAI SDK signature changes across versions. Build a client with
+    best-effort optional kwargs without crashing.
+    """
+    if OpenAI is None:
+        return None
+    try:
+        return OpenAI(**kwargs)
+    except TypeError:
+        # Retry with a smaller set of args (some versions don't accept all kwargs).
+        safe = dict(kwargs)
+        safe.pop("timeout", None)
+        try:
+            return OpenAI(**safe)
+        except TypeError:
+            safe.pop("max_retries", None)
+            return OpenAI(**safe)
+
+
 def _coerce_structured(text: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Groq/open models sometimes ignore JSON-only instructions.
@@ -330,39 +359,47 @@ def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not models:
         models = fallbacks
 
-    client = OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL)
+    # Groq free tiers can rate-limit aggressively. Disable SDK retries to avoid long hangs,
+    # and rely on our rule-based fallback when rate-limited.
+    client = _new_openai_client(
+        api_key=GROQ_API_KEY,
+        base_url=GROQ_BASE_URL,
+        max_retries=0,
+        timeout=LLM_TIMEOUT,
+    )
+    if client is None:
+        return None
     messages = [
         {"role": "system", "content": _system_prompt()},
         {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
     ]
 
+    global _GROQ_WORKING_MODEL
+    if _GROQ_WORKING_MODEL:
+        models = _model_candidates(_GROQ_WORKING_MODEL, models)
+
     last_err: Optional[Exception] = None
     for model in models:
         try:
-            # Groq OpenAI-compat may not support response_format; try, then fall back.
-            try:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    timeout=LLM_TIMEOUT,
-                    temperature=0.7,
-                    max_tokens=300,
-                    response_format={"type": "json_object"},
-                )
-            except Exception:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    timeout=LLM_TIMEOUT,
-                    temperature=0.7,
-                    max_tokens=300,
-                )
+            # Do NOT use response_format here: Groq OpenAI-compat often rejects it (400),
+            # causing 2x calls per turn and quickly hitting 429 on free tiers.
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                timeout=LLM_TIMEOUT,
+                temperature=0.7,
+                max_tokens=300,
+            )
             text = resp.choices[0].message.content.strip()
             parsed = _coerce_structured(text, context)
             if parsed:
+                _GROQ_WORKING_MODEL = model
                 return parsed
         except Exception as e:
             last_err = e
+            # If we're rate-limited, don't spam retries/model-fallbacks.
+            if _looks_rate_limited(e):
+                break
             continue
 
     if last_err:

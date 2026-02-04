@@ -8,7 +8,7 @@ import argparse
 from urllib.parse import urlparse
 
 # use local default for testing/development
-API_URL = os.getenv("HONEYPOT_URL", "https://web-production-ae3d7.up.railway.app/honeypot")
+RAW_API_URL = os.getenv("HONEYPOT_URL", "https://web-production-ae3d7.up.railway.app/honeypot")
 API_KEY = os.getenv("HONEYPOT_API_KEY", "")
 AUTOSTART = os.getenv("AUTOSTART_SERVER", "1")  # set to "0" to disable auto-start
 
@@ -20,6 +20,23 @@ headers = {
 if API_KEY:
     headers["x-api-key"] = API_KEY
 
+def normalize_api_url(api_url: str) -> str:
+    """
+    Common footgun: people paste the base domain (/) which returns health JSON,
+    so `reply` becomes None. If the URL has no path, assume /honeypot.
+    """
+    url = (api_url or "").strip()
+    if not url:
+        return url
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc and (parsed.path in ("", "/")):
+        return url.rstrip("/") + "/honeypot"
+    return url
+
+API_URL = normalize_api_url(RAW_API_URL)
+if API_URL != RAW_API_URL:
+    print(f"[note] HONEYPOT_URL had no path; using: {API_URL}")
+
 def server_is_up(base_url, timeout=1.0):
     try:
         r = requests.get(base_url, timeout=timeout)
@@ -29,7 +46,9 @@ def server_is_up(base_url, timeout=1.0):
 
 def ensure_server(api_url, timeout=10):
     parsed = urlparse(api_url)
-    base = f"{parsed.scheme}://{parsed.hostname}:{parsed.port or 80}/"
+    # Don't force a port; HTTPS default is 443, HTTP default is 80.
+    port = f":{parsed.port}" if parsed.port else ""
+    base = f"{parsed.scheme}://{parsed.hostname}{port}/"
     if server_is_up(base):
         return True
     # only auto-start for localhost/127.0.0.1 and when AUTOSTART permitted
@@ -108,6 +127,8 @@ def _run_script(messages, delay_sec=10.0, log_path=None):
             try:
                 data = r.json()
                 bot = data.get("reply")
+                if bot is None:
+                    bot = f"[no reply field] {data}"
             except Exception:
                 bot = r.text
         except Exception as e:
@@ -154,7 +175,10 @@ def main():
             r = requests.post(API_URL, json=payload, headers=headers, timeout=10)
             try:
                 data = r.json()
-                print("Bot:", data.get("reply"))
+                bot = data.get("reply")
+                if bot is None:
+                    bot = f"[no reply field] {data}"
+                print("Bot:", bot)
             except Exception:
                 print("Bot (non-json):", r.text)
         except requests.exceptions.ConnectionError as e:
