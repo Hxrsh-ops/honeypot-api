@@ -70,6 +70,7 @@ SMALLTALK_RE = re.compile(r"\b(hi|hello|hey|how are you|what's up|whats up|sup|g
 THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
 JOB_SCAM_RE = re.compile(r"(job offer|offer letter|pay.*(fee|deposit)|training fee|placement fee)", re.I)
 MONEY_HELP_RE = re.compile(r"(need money|loan|borrow|transfer|send.*money|2k|5k|urgent cash)", re.I)
+PARCEL_SCAM_RE = re.compile(r"(parcel|delivery|courier|re-delivery|customs fee|delivery fee)", re.I)
 
 CASUAL_PREFIX = [
     "hmm",
@@ -98,6 +99,7 @@ OTP_PROBES = [
 
 SMALLTALK_RESPONSES = [
     "hey, what's up",
+    "i'm ok, what's this about",
     "hi, i'm a bit busy, what's this about",
     "yo, who is this",
     "hey, say it straight",
@@ -274,6 +276,7 @@ class Agent:
             "thanks": bool(THANKS_RE.search(lower)),
             "job_scam": bool(JOB_SCAM_RE.search(text or "")),
             "money_help": bool(MONEY_HELP_RE.search(lower)),
+            "parcel_scam": bool(PARCEL_SCAM_RE.search(text or "")),
         }
 
     # --------------------------------------------------------
@@ -415,6 +418,8 @@ class Agent:
 
         if "dont you trust me" in lower or "don't you trust me" in lower:
             return "trust needs proof, not pressure"
+        if "how are you" in lower:
+            return "i'm ok, what's this about"
         if "why are you stalling" in lower or "why are you stalling?" in lower:
             return "because you keep rushing me"
         if "wht" in lower or lower.strip() in ("what", "wht", "what?"):
@@ -693,6 +698,16 @@ class Agent:
             ])
             reply = self._style_scrubber(reply)
             return self._finalize_reply(reply, ["logic_doubt", "resistance"], "job_scam", signals)
+
+        # parcel scam handling
+        if signals.get("parcel_scam") and signals.get("link"):
+            reply = random.choice([
+                "not paying delivery fee on a link",
+                "i'll check the official courier app",
+                "send official tracking page, not this link",
+            ])
+            reply = self._style_scrubber(reply)
+            return self._finalize_reply(reply, ["logic_doubt", "probing_links"], "parcel_scam", signals)
 
         # OTP refusal after first request
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
