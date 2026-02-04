@@ -32,6 +32,7 @@ ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
 PHONE_RE = re.compile(r"(?:\+91[-\s]?)?[6-9]\d{9}")
 DIGIT_SEQ = re.compile(r"\b\d{4,}\b")
 UPI_LIKE = re.compile(r"\b[\w\.-]+@[\w-]+\b", re.I)
+CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.I)
 
 
 def _openai_available() -> bool:
@@ -107,7 +108,11 @@ def _system_prompt() -> str:
         "If context includes memory_hint or otp_probe_hint, prefer that phrasing. "
         "Use directive as a soft instruction for tone and intent. "
         "Avoid generic loops like 'explain' over and over; ask for specific proof (branch, official email, employee id). "
-        "Reply ONLY as valid JSON with keys: reply, extractions, intent, mood_delta, follow_up_question, session_summary."
+        "Reply ONLY as a single valid JSON object (no markdown, no code fences) with keys: "
+        "reply, extractions, intent, mood_delta, follow_up_question, session_summary. "
+        "Example: "
+        "{\"reply\":\"...\",\"extractions\":{},\"intent\":\"scam_pressure\",\"mood_delta\":0.0,"
+        "\"follow_up_question\":\"\",\"session_summary\":\"...\"}"
     )
 
 
@@ -120,6 +125,41 @@ def _model_candidates(primary: str, fallbacks: list[str]) -> list[str]:
         if m not in out:
             out.append(m)
     return out
+
+
+def _coerce_structured(text: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Groq/open models sometimes ignore JSON-only instructions.
+    If parsing fails, degrade gracefully by wrapping plain text as the `reply`.
+    """
+    if not text:
+        return None
+
+    text = text.strip()
+
+    parsed = _safe_json_parse(text)
+    if parsed:
+        return parsed
+
+    cleaned = CODE_FENCE.sub("", text).strip()
+    parsed = _safe_json_parse(cleaned)
+    if parsed:
+        return parsed
+
+    # As a last resort, treat the entire response as the reply.
+    if not cleaned:
+        return None
+
+    intent = str(context.get("intent_hint") or context.get("intent") or "general").strip() or "general"
+    summary = str(context.get("session_summary") or "").strip()
+    return {
+        "reply": cleaned,
+        "extractions": {},
+        "intent": intent,
+        "mood_delta": 0.0,
+        "follow_up_question": "",
+        "session_summary": summary[:240],
+    }
 
 
 def openai_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -165,7 +205,7 @@ def openai_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     max_tokens=260,
                 )
             text = resp.choices[0].message.content.strip()
-            parsed = _safe_json_parse(text)
+            parsed = _coerce_structured(text, context)
             if parsed:
                 return parsed
         except Exception as e:
@@ -185,6 +225,11 @@ def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "llama3-70b-8192",
         "llama3-8b-8192",
         "mixtral-8x7b-32768",
+        # newer/alt names (won't hurt if unavailable)
+        "llama-3.1-70b-versatile",
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "llama-3.3-70b-specdec",
     ]
     models = _model_candidates(GROQ_MODEL, fallbacks)
     if not models:
@@ -218,7 +263,7 @@ def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     max_tokens=260,
                 )
             text = resp.choices[0].message.content.strip()
-            parsed = _safe_json_parse(text)
+            parsed = _coerce_structured(text, context)
             if parsed:
                 return parsed
         except Exception as e:
@@ -271,7 +316,11 @@ def anthropic_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, An
             text2 = "".join([block.text for block in resp2.content if hasattr(block, "text")]).strip()
         except Exception:
             text2 = str(resp2.content).strip()
-        return _safe_json_parse(text2)
+        parsed2 = _safe_json_parse(text2)
+        if parsed2:
+            return parsed2
+
+        return _coerce_structured(text2, context)
     except Exception as e:
         logger.exception("Anthropic structured reply failure: %s", e)
         return None

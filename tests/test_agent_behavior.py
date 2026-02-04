@@ -1,5 +1,6 @@
 import time
 import re
+import random
 from agent import Agent
 
 
@@ -52,6 +53,11 @@ def test_no_exact_repeats_over_many_replies():
 
 
 def test_length_variation():
+    # This test is intentionally about variety; seed locally to avoid flakes while
+    # keeping behavior random in production.
+    state = random.getstate()
+    random.seed(1337)
+
     s = {}
     a = Agent(s)
     types = {"short":0, "medium":0, "long":0}
@@ -68,6 +74,8 @@ def test_length_variation():
     assert sum(types.values()) == 30
     # expect at least one of each length in a reasonable random run
     assert types["short"] > 0 and types["medium"] > 0
+
+    random.setstate(state)
 
 
 def test_otp_probe_variety():
