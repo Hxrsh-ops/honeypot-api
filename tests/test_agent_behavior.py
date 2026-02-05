@@ -1,6 +1,7 @@
 import time
 import re
 import random
+import botpress_adapter
 from agent import Agent
 from memory_manager import MemoryManager
 
@@ -192,3 +193,34 @@ def test_fake_landline_called_out():
     out = a.respond("0008799689")
     r = (out.get("reply") or "").lower()
     assert any(k in r for k in ["fake", "landline", "mobile"])
+
+
+def test_botpress_chat_path_used_and_no_exact_repeats(monkeypatch):
+    """
+    CI-safe: we don't call Botpress for real; we just ensure the Agent uses the adapter
+    when CHAT_PROVIDER=botpress and enforces no exact duplicate outgoing messages.
+    """
+    s = {}
+    a = Agent(s)
+
+    monkeypatch.setenv("CHAT_PROVIDER", "botpress")
+    monkeypatch.setenv("BOTPRESS_TOKEN", "dummy")
+    monkeypatch.setenv("BOTPRESS_BOT_ID", "dummy")
+
+    calls = {"n": 0}
+
+    def _fake_chat(session, incoming):
+        calls["n"] += 1
+        return "ok got it"
+
+    monkeypatch.setattr(botpress_adapter, "botpress_available", lambda: True)
+    monkeypatch.setattr(botpress_adapter, "chat", _fake_chat)
+
+    out1 = a.respond("hi")
+    out2 = a.respond("hi")
+
+    assert calls["n"] >= 2
+    assert out1.get("llm_used") is True
+    assert out1.get("reply")
+    assert out2.get("reply")
+    assert out2.get("reply") != out1.get("reply"), "Agent must not repeat exact same outgoing text"

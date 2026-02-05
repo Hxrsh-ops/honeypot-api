@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 RAW_API_URL = os.getenv("HONEYPOT_URL", "https://spotless-maggi-hxrsh-ops-36f954ea.koyeb.app/honeypot")
 API_KEY = os.getenv("HONEYPOT_API_KEY", "")
 AUTOSTART = os.getenv("AUTOSTART_SERVER", "1")  # set to "0" to disable auto-start
-BOT_LABEL = os.getenv("HONEYPOT_BOT_LABEL", "Asha")
+BOT_LABEL = os.getenv("HONEYPOT_BOT_LABEL", "Bot")
 REQ_TIMEOUT = float(os.getenv("HONEYPOT_TIMEOUT", "30"))
 
 session_id = str(uuid.uuid4())

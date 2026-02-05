@@ -21,6 +21,7 @@ from agent_utils import (
 )
 from memory_manager import MemoryManager, FREE_EMAIL_DOMAINS
 from llm_adapter import generate_structured_reply, llm_available, rephrase_with_llm
+import botpress_adapter
 
 logger = logging.getLogger("agent")
 logging.basicConfig(level=logging.INFO)
@@ -982,12 +983,30 @@ class Agent:
                 "otp_probe",
             )
 
-        # LLM-first
+        # Chat provider routing:
+        # - If CHAT_PROVIDER=botpress, Botpress generates the reply for every turn.
+        # - Otherwise, we use the LLM adapter (Groq/OpenAI/Anthropic) when available.
+        chat_provider = (os.getenv("CHAT_PROVIDER") or "").strip().lower()
+        use_botpress = chat_provider == "botpress" and botpress_adapter.botpress_available()
+
+        if use_botpress:
+            bp_reply = botpress_adapter.chat(self.s, incoming)
+            if bp_reply:
+                reply = self._guardrails(bp_reply)
+                # Keep Botpress tone; only enforce "no exact repeats".
+                reply = self._unique_reply(reply, allow_variation=False)
+                self.memory.add_bot_message(reply)
+                self.memory.update_summary(incoming, reply)
+                if verification_asks:
+                    self.s.setdefault("flags", {})["last_verification_ask"] = verification_asks[0]
+                return self._build_response(reply, incoming, signals, intent_hint, llm_used=True)
+
+        # LLM-first (unless botpress is enabled)
         llm_used = False
         reply = None
         llm_out = None
 
-        if llm_available():
+        if (not use_botpress) and llm_available():
             directive = self._intent_directive(
                 intent_hint,
                 signals,

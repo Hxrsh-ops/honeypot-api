@@ -19,6 +19,11 @@ try:
 except Exception:
     Anthropic = None
 
+try:
+    import botpress_adapter
+except Exception:
+    botpress_adapter = None
+
 def _clean_key(value: str) -> str:
     """
     Railway/env var UIs sometimes end up with:
@@ -67,6 +72,12 @@ ANTHROPIC_API_KEY = _clean_key(os.getenv("ANTHROPIC_API_KEY") or "")
 ANTHROPIC_MODEL = (os.getenv("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514").strip()
 ANTHROPIC_VERSION = (os.getenv("ANTHROPIC_VERSION") or "2023-06-01").strip()
 
+# Botpress (chat provider)
+CHAT_PROVIDER = (os.getenv("CHAT_PROVIDER") or "").strip().lower()
+BOTPRESS_TOKEN = (os.getenv("BOTPRESS_TOKEN") or "").strip()
+BOTPRESS_BOT_ID = (os.getenv("BOTPRESS_BOT_ID") or "").strip()
+BOTPRESS_API_BASE = (os.getenv("BOTPRESS_API_BASE") or "https://api.botpress.cloud").strip()
+
 PHONE_RE = re.compile(r"(?:\+91[-\s]?)?[6-9]\d{9}")
 DIGIT_SEQ = re.compile(r"\b\d{4,}\b")
 UPI_LIKE = re.compile(r"\b[\w\.-]+@[\w-]+\b", re.I)
@@ -92,6 +103,11 @@ def _set_last_error(provider: str, err: Exception):
 
 
 def last_llm_error() -> Dict[str, Any]:
+    if CHAT_PROVIDER == "botpress" and botpress_adapter is not None:
+        try:
+            return botpress_adapter.last_botpress_error()
+        except Exception:
+            pass
     return dict(_LAST_ERROR)
 
 
@@ -111,6 +127,13 @@ def llm_debug_info() -> Dict[str, Any]:
     # Never return raw keys.
     return {
         "use_llm": USE_LLM,
+        "chat_provider": CHAT_PROVIDER or "llm",
+        "botpress": {
+            "available": (CHAT_PROVIDER == "botpress") and bool(BOTPRESS_TOKEN) and bool(BOTPRESS_BOT_ID),
+            "base_url": BOTPRESS_API_BASE,
+            "bot_id": _key_fingerprint(BOTPRESS_BOT_ID),
+            "token": _key_fingerprint(BOTPRESS_TOKEN),
+        },
         "openai": {
             "available": _openai_available(),
             "model": OPENAI_MODEL,
@@ -150,10 +173,14 @@ def _anthropic_available() -> bool:
 
 
 def llm_available() -> bool:
+    if CHAT_PROVIDER == "botpress":
+        return bool(BOTPRESS_TOKEN) and bool(BOTPRESS_BOT_ID)
     return _openai_available() or _groq_available() or _anthropic_available()
 
 
 def current_llm_provider() -> str:
+    if CHAT_PROVIDER == "botpress" and bool(BOTPRESS_TOKEN) and bool(BOTPRESS_BOT_ID):
+        return "botpress"
     if _groq_available():
         return "groq"
     if _openai_available():
