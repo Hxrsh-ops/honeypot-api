@@ -68,6 +68,7 @@ PARCEL_SCAM_RE = re.compile(r"(parcel|delivery|courier|re-delivery|customs fee|d
 SMALLTALK_RE = re.compile(r"\b(hi|hello|hey|how are you|what's up|whats up|sup|good morning|good night|good evening)\b", re.I)
 THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
 ROBOTIC_RE = re.compile(r"\b(please|kindly|regards|sincerely|apolog|regarding|dear|sir|madam|as per|we advise|we request)\b", re.I)
+IDENTITY_LOOP_RE = re.compile(r"\b(who('?s| is)\s+this|who r u|who are you)\b", re.I)
 ASSISTANTY_RE = re.compile(
     r"\b("
     r"thanks for reaching out|"
@@ -134,6 +135,11 @@ class Agent:
         smalltalk = bool(SMALLTALK_RE.search(lower))
         if smalltalk and (AUTH_RE.search(lower) or "i am" in lower or "from" in lower):
             smalltalk = False
+        # If we already have an identity thread going, don't treat "hlo?/hi" pings as new smalltalk.
+        if smalltalk:
+            facts = self.s.get("memory_state", {}).get("facts", {}) or {}
+            if facts.get("name") or facts.get("bank") or self.s.get("flags", {}).get("otp_ask_count", 0) > 0:
+                smalltalk = False
 
         return {
             "otp": bool(OTP_RE.search(lower)),
@@ -225,6 +231,14 @@ class Agent:
             return reply
         if ASSISTANTY_RE.search(reply):
             # Hard rewrite: assistant-y greetings are a dead giveaway.
+            facts = self.s.get("memory_state", {}).get("facts", {}) or {}
+            if facts.get("name") or facts.get("bank"):
+                return random.choice([
+                    "ok what's this about?",
+                    "haan? what happened",
+                    "what is it now",
+                    "bol, what's the issue",
+                ])
             return random.choice([
                 "who's this?",
                 "who is this",
@@ -326,6 +340,12 @@ class Agent:
                 "that 'landline' looks like a mobile number",
                 "nah that number looks mobile",
                 "branch landline shouldn't look like mobile",
+            ])
+        elif "landline_fake" in suspicious:
+            pre = random.choice([
+                "that number looks fake",
+                "nah that's not a real branch line",
+                "send the real branch landline",
             ])
         elif "branch_ambiguous" in suspicious:
             if branch and len(branch.split()) == 1:
@@ -765,6 +785,22 @@ class Agent:
         # short "got it / here's what's missing" line.
         if reply:
             rlow = reply.lower()
+            prev_bot = ""
+            try:
+                bots_prev = self.s.get("memory_state", {}).get("last_bot_messages", [])
+                prev_bot = (bots_prev[-1] if bots_prev else "") or ""
+            except Exception:
+                prev_bot = ""
+
+            # Avoid identity loops once the thread already has an identity.
+            if IDENTITY_LOOP_RE.search(rlow):
+                if not signals.get("smalltalk") and (
+                    facts_now.get("name")
+                    or facts_now.get("bank")
+                    or IDENTITY_LOOP_RE.search((prev_bot or "").lower())
+                ):
+                    reply = memory_hint or self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                    rlow = reply.lower()
             if DISMISSIVE_RE.search(rlow):
                 reply = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
                 rlow = reply.lower()

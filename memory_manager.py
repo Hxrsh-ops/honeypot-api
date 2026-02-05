@@ -195,6 +195,21 @@ class MemoryManager:
             m = LONG_DIGITS_RE.search(text)
             if m:
                 extracted["branch_phone"] = m.group(0)
+        # If we just asked for landline/branch line and they reply with a number only, treat it as branch_phone.
+        if not extracted.get("branch_phone"):
+            last_bot = ""
+            try:
+                bots = self.mem.get("last_bot_messages", [])
+                last_bot = (bots[-1] if bots else "") or ""
+            except Exception:
+                last_bot = ""
+            if re.search(r"\b(landline|branch line|office line)\b", last_bot.lower()):
+                candidate = (text or "").strip()
+                # Only digits + separators to avoid capturing unrelated IDs in sentences.
+                if re.fullmatch(r"[\d\s\-\+\(\)]+", candidate or ""):
+                    m = LONG_DIGITS_RE.search(candidate)
+                    if m:
+                        extracted["branch_phone"] = m.group(0)
 
         phone = PHONE_RE.search(text)
         if phone:
@@ -230,6 +245,28 @@ class MemoryManager:
             or re.fullmatch(r"[6-9]\d{10}", digits)  # suspicious 11-digit starting like mobile
         )
 
+    def _looks_fake_number(self, number: Any) -> bool:
+        """
+        Lightweight sanity checks for obviously fake callback/landline numbers.
+        """
+        s = str(number or "").strip()
+        digits = re.sub(r"\D", "", s)
+        if len(digits) < 8:
+            return False
+        # all digits are the same (0000000000 / 11111111)
+        if len(set(digits)) == 1:
+            return True
+        # starts with a run of zeros (unlikely real landline)
+        if digits.startswith("000"):
+            return True
+        # too many zeros overall (likely placeholder)
+        if len(digits) >= 9 and digits.count("0") >= int(len(digits) * 0.6):
+            return True
+        # obvious sequences
+        if digits in {"12345678", "1234567890", "0987654321", "00000000", "0000000000"}:
+            return True
+        return False
+
     def _branch_is_ambiguous(self, branch: Any) -> bool:
         b = (str(branch or "").strip().lower())
         if not b:
@@ -258,6 +295,7 @@ class MemoryManager:
         email_domain = self._email_domain(email)
         free_email = self._is_free_email(email)
         mobile_like_landline = self._is_probably_mobile(branch_phone)
+        fake_landline = self._looks_fake_number(branch_phone)
         branch_ambiguous = self._branch_is_ambiguous(branch)
 
         provided: List[str] = []
@@ -287,6 +325,9 @@ class MemoryManager:
             missing.append("branch landline (not mobile)")
         elif mobile_like_landline:
             suspicious.append("landline_looks_mobile")
+            missing.append("branch landline (not mobile)")
+        elif fake_landline:
+            suspicious.append("landline_fake")
             missing.append("branch landline (not mobile)")
 
         # Branch name: if they only gave a city, ask for a real branch name.
@@ -451,6 +492,7 @@ class MemoryManager:
         proof = self.compute_proof_state()
         free_email = "free_email" in (proof.get("suspicious") or [])
         landline_mobile = "landline_looks_mobile" in (proof.get("suspicious") or [])
+        landline_fake = "landline_fake" in (proof.get("suspicious") or [])
         branch_ambiguous = "branch_ambiguous" in (proof.get("suspicious") or [])
         email_domain = str(proof.get("email_domain") or "")
 
@@ -476,6 +518,12 @@ class MemoryManager:
                     f"that looks like a mobile number. send {ask}",
                     f"bro that's not a branch landline. send {ask}",
                     f"nah, need the real branch landline. send {ask}",
+                ])
+            if landline_fake and "landline" in ask:
+                return random.choice([
+                    f"that number looks fake. send {ask}",
+                    f"nah that's not a real branch line. send {ask}",
+                    f"send the real branch landline. not that one",
                 ])
             if branch_ambiguous and "branch name" in ask:
                 branch_is_city = bool(branch) and len(str(branch).strip().split()) == 1

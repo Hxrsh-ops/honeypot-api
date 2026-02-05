@@ -321,7 +321,8 @@ def classify_message_complexity(text: str) -> str:
 def redact_sensitive(text: str) -> str:
     if not text:
         return text
-    text = PHONE_RE.sub("(phone)", text)
+    # Keep masking human-ish; avoid botty "[redacted]" tokens in replies.
+    text = PHONE_RE.sub("xxxx", text)
     text = UPI_RE.sub("(upi)", text)
-    text = re.sub(r"\b\d{4,}\b", "[redacted]", text)
+    text = re.sub(r"\b\d{4,}\b", "xxxx", text)
     return text
