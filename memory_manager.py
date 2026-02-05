@@ -210,6 +210,18 @@ class MemoryManager:
                     m = LONG_DIGITS_RE.search(candidate)
                     if m:
                         extracted["branch_phone"] = m.group(0)
+        # If bank context exists and they send just a number, treat it as callback/branch line (helps avoid loops).
+        if not extracted.get("branch_phone"):
+            try:
+                facts_now = self.mem.get("facts", {}) or {}
+            except Exception:
+                facts_now = {}
+            if facts_now.get("bank"):
+                candidate = (text or "").strip()
+                if re.fullmatch(r"[\d\s\-\+\(\)]+", candidate or ""):
+                    m = LONG_DIGITS_RE.search(candidate)
+                    if m:
+                        extracted["branch_phone"] = m.group(0)
 
         phone = PHONE_RE.search(text)
         if phone:
