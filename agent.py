@@ -571,6 +571,24 @@ class Agent:
             return "real jobs don't ask money"
         if signals.get("parcel_scam"):
             return "i'll check the official courier app"
+
+        # Thread continuity fallback: if we already have a bank/authority thread going,
+        # don't return random generic lines for short/unhelpful messages.
+        facts = self.s.get("memory_state", {}).get("facts", {}) or {}
+        in_bank_thread = bool(
+            facts.get("bank")
+            or self.s.get("flags", {}).get("scam_confirmed")
+            or self.s.get("flags", {}).get("otp_ask_count", 0) > 0
+        )
+        if in_bank_thread and not any([signals.get("legit_statement"), signals.get("transaction_alert"), signals.get("smalltalk")]):
+            proof = self.memory.compute_proof_state()
+            asks = list(proof.get("asks") or [])
+            if proof.get("missing"):
+                return self._verification_status_line(
+                    proof,
+                    asks,
+                    scam_confirmed=bool(self.s.get("flags", {}).get("scam_confirmed")),
+                )
         if signals.get("authority") or signals.get("urgency") or signals.get("threat"):
             return self.memory.answer_verification_status()
         if signals.get("otp"):
@@ -620,6 +638,15 @@ class Agent:
         # keep thread continuity: if OTP/scam was already in play, don't fall back to "general"
         if intent_hint == "general" and self.s.get("flags", {}).get("otp_ask_count", 0) > 0:
             if not any([signals.get("legit_statement"), signals.get("transaction_alert"), signals.get("smalltalk")]):
+                intent_hint = "scam_pressure"
+
+        # keep thread continuity: once someone claimed a bank/authority, short/unhelpful replies
+        # shouldn't reset us back to generic smalltalk.
+        if intent_hint == "general":
+            facts_thread = self.s.get("memory_state", {}).get("facts", {}) or {}
+            if (facts_thread.get("bank") or self.s.get("flags", {}).get("scam_confirmed")) and not any(
+                [signals.get("legit_statement"), signals.get("transaction_alert"), signals.get("smalltalk")]
+            ):
                 intent_hint = "scam_pressure"
 
         if signals.get("otp"):
