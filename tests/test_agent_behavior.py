@@ -164,3 +164,31 @@ def test_employee_id_extraction_from_digits_only_after_ask():
     mem.mem["last_bot_messages"] = ["send employee id"]
     ex = mem.extract_from_text("55568994")
     assert ex.get("employee_id") == "55568994"
+
+
+def test_fallback_prioritizes_link_when_provided():
+    s = {}
+    a = Agent(s)
+    a.respond("i am from sbi bank your account will freeze in 1 hour renew now")
+    out = a.respond("here is link https://secure-login.example.com")
+    r = (out.get("reply") or "").lower()
+    assert any(k in r for k in ["link", "site", "domain", "official"])
+
+
+def test_no_bank_reask_when_extracted():
+    s = {}
+    a = Agent(s)
+    a.respond("i am kumar from lic bank")
+    out = a.respond("ok my mail is kumar.lic@gmail.com and id 66677790")
+    r = (out.get("reply") or "").lower()
+    assert "which bank" not in r
+
+
+def test_fake_landline_called_out():
+    s = {}
+    mem = MemoryManager(s)
+    mem.add_bot_message("send branch landline (not mobile)")
+    a = Agent(s)
+    out = a.respond("0008799689")
+    r = (out.get("reply") or "").lower()
+    assert any(k in r for k in ["fake", "landline", "mobile"])

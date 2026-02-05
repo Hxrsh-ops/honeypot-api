@@ -83,6 +83,21 @@ class MemoryManager:
         self.s = session
         self.mem = ensure_memory(session)
 
+    def _cycle_choice(self, options: List[str], key: str) -> str:
+        """
+        Deterministic helper for rule-based phrasing.
+        (LLM provides main variation; this avoids random template-y flips.)
+        """
+        if not options:
+            return ""
+        flags = self.s.setdefault("flags", {})
+        try:
+            n = int(flags.get(key, 0) or 0)
+        except Exception:
+            n = 0
+        flags[key] = n + 1
+        return options[n % len(options)]
+
     def add_user_message(self, text: str):
         msgs = self.mem.get("last_user_messages", [])
         msgs.append(text)
@@ -475,26 +490,23 @@ class MemoryManager:
         branch = facts.get("branch")
 
         if name and bank and branch:
-            return random.choice([
+            return self._cycle_choice([
                 f"you said {name} from {bank} bank, branch {branch}, right?",
                 f"your name is {name} and branch {branch} at {bank}, yeah?",
                 f"{name} from {bank} bank, branch {branch} — that's what you said",
-            ])
+            ], "mm_profile_full")
         if name and bank and not branch:
-            return random.choice([
+            return self._cycle_choice([
                 f"your name is {name}, right? i don't think you told me the branch yet",
                 f"you said {name} from {bank} bank, but no branch info",
                 f"{name} from {bank} — branch missing tho",
-            ])
+            ], "mm_profile_no_branch")
         if name and not bank:
-            return random.choice([
+            return self._cycle_choice([
                 f"you said your name is {name}, but no bank yet",
                 f"name was {name}, i didn't catch the bank",
-            ])
-        return random.choice([
-            "i don't have your name/branch yet",
-            "not sure, you didn't share name/branch",
-        ])
+            ], "mm_profile_no_bank")
+        return self._cycle_choice(["i don't have your name/branch yet", "not sure, you didn't share name/branch"], "mm_profile_none")
 
     def answer_verification_status(self) -> str:
         """
@@ -532,48 +544,45 @@ class MemoryManager:
             ask = missing[0]
             # keep it short and a bit annoyed
             if free_email and email_domain:
-                return random.choice([
+                return self._cycle_choice([
                     f"ok {who}, i saw the id/branch stuff but that mail is {email_domain}. not official. send {ask}",
                     f"that's a {email_domain} mail. not official. send {ask}",
                     f"ok but that's not bank mail. send {ask}",
-                ])
+                ], "mm_verif_free_email")
             if landline_mobile and "landline" in ask:
-                return random.choice([
+                return self._cycle_choice([
                     f"that looks like a mobile number. send {ask}",
                     f"that's not a branch landline. send {ask}",
                     f"nah, need the real branch landline. send {ask}",
-                ])
+                ], "mm_verif_landline_mobile")
             if landline_fake and "landline" in ask:
-                return random.choice([
+                return self._cycle_choice([
                     f"that number looks fake. send {ask}",
                     f"nah that's not a real branch line. send {ask}",
                     f"send the real branch landline. not that one",
-                ])
+                ], "mm_verif_landline_fake")
             if branch_ambiguous and "branch name" in ask:
                 branch_is_city = bool(branch) and len(str(branch).strip().split()) == 1
                 branch_label = str(branch or "").strip()
-                return random.choice([
+                return self._cycle_choice([
                     f"you said {branch_label}, that's just city. send {ask}" if branch_is_city else f"'{branch_label}' is too generic. send {ask}",
                     f"ok {branch_label} where exactly? send {ask}",
                     f"that's not a proper branch name. send {ask}",
-                ])
-            return random.choice([
+                ], "mm_verif_branch_amb")
+            return self._cycle_choice([
                 f"you said you're from {bank} bank and gave some details. still need {ask}" if bank else f"you said you're from the bank and gave some details. still need {ask}",
                 f"ok i got what you sent. still need {ask}",
                 f"you gave the basics, but i still need {ask}",
-            ])
+            ], "mm_verif_missing")
 
         # nothing missing: push them to state the actual issue
         if bank and branch:
-            return random.choice([
+            return self._cycle_choice([
                 f"ok {bank} {branch} branch, got it. what's the issue then?",
                 "ok got it. so what's the actual problem?",
                 "cool. now tell me what exactly you want from me",
-            ])
-        return random.choice([
-            "ok. what exactly do you want now?",
-            "got it. so what's the issue?",
-        ])
+            ], "mm_verif_complete")
+        return self._cycle_choice(["ok. what exactly do you want now?", "got it. so what's the issue?"], "mm_verif_generic")
 
     def answer_memory_question(self) -> str:
         msgs = self.mem.get("last_user_messages", [])
@@ -583,8 +592,7 @@ class MemoryManager:
         if not prev:
             return "i didn't catch it, say again?"
         short = prev[:60]
-        return random.choice([
-            f"you said '{short}'",
-            f"you said: {short}",
-            f"you mentioned '{short}'",
-        ])
+        return self._cycle_choice(
+            [f"you said '{short}'", f"you said: {short}", f"you mentioned '{short}'"],
+            "mm_mem_q",
+        )

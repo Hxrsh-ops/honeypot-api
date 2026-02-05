@@ -75,6 +75,8 @@ CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.I)
 # Best-effort debug hook (safe to expose only when explicitly requested).
 _LAST_ERROR: Dict[str, Any] = {"provider": "none", "type": "", "error": "", "ts": 0.0}
 _GROQ_WORKING_MODEL: str = ""
+_GROQ_COOLDOWN_UNTIL: float = 0.0
+_GROQ_COOLDOWN_SEC: float = float((os.getenv("GROQ_COOLDOWN_SEC") or "20").strip())
 
 
 def _set_last_error(provider: str, err: Exception):
@@ -152,10 +154,10 @@ def llm_available() -> bool:
 
 
 def current_llm_provider() -> str:
-    if _openai_available():
-        return "openai"
     if _groq_available():
         return "groq"
+    if _openai_available():
+        return "openai"
     if _anthropic_available():
         return "anthropic"
     return "none"
@@ -175,7 +177,8 @@ def _safe_json_parse(text: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
     try:
-        return json.loads(text)
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
     except Exception:
         pass
 
@@ -184,7 +187,8 @@ def _safe_json_parse(text: str) -> Optional[Dict[str, Any]]:
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return json.loads(text[start:end+1])
+            obj = json.loads(text[start:end+1])
+            return obj if isinstance(obj, dict) else None
     except Exception:
         return None
     return None
@@ -205,7 +209,9 @@ def _system_prompt() -> str:
         "If your last message asked for a specific proof (branch landline / employee id / email) and they reply with just a number/email, treat it as the answer. "
         "If it's the first/early turn and they just say 'hi/hello', reply like a real person: 'who?' / 'who's this?' "
         "(NOT friendly smalltalk). "
-        "If context.facts already includes their name/bank, do NOT ask 'who is this' again; stay in-thread and ask what you need. "
+        "If context.facts already includes their name/bank, do NOT ask 'who is this' again and do NOT ask 'which bank/name again'. "
+        "Stay in-thread and ask what you need next. "
+        "If the latest incoming message includes a URL/UPI/ID/number, you MUST acknowledge it (without repeating it back) and continue the thread. "
         "You are NOT bank staff. Don't say 'our system', 'our records', or anything that implies you work at the bank. "
         "If someone claims to be a bank/authority, be skeptical and mildly annoyed; ask for specific proof "
         "(branch landline / bank-domain email / employee id / official link). "
@@ -278,12 +284,12 @@ def _coerce_structured(text: str, context: Dict[str, Any]) -> Optional[Dict[str,
     text = text.strip()
 
     parsed = _safe_json_parse(text)
-    if parsed:
+    if parsed and isinstance(parsed, dict) and parsed.get("reply") is not None:
         return parsed
 
     cleaned = CODE_FENCE.sub("", text).strip()
     parsed = _safe_json_parse(cleaned)
-    if parsed:
+    if parsed and isinstance(parsed, dict) and parsed.get("reply") is not None:
         return parsed
 
     # As a last resort, treat the entire response as the reply.
@@ -361,6 +367,11 @@ def openai_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]
 def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not _groq_available():
         return None
+    # If we recently got rate-limited, don't thrash Groq; fall back immediately.
+    global _GROQ_COOLDOWN_UNTIL
+    now = time.time()
+    if now < _GROQ_COOLDOWN_UNTIL:
+        return None
 
     fallbacks = [
         "llama3-70b-8192",
@@ -404,8 +415,8 @@ def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 model=model,
                 messages=messages,
                 timeout=LLM_TIMEOUT,
-                temperature=0.7,
-                max_tokens=300,
+                temperature=0.55,
+                max_tokens=220,
             )
             text = resp.choices[0].message.content.strip()
             parsed = _coerce_structured(text, context)
@@ -416,6 +427,7 @@ def groq_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             last_err = e
             # If we're rate-limited, don't spam retries/model-fallbacks.
             if _looks_rate_limited(e):
+                _GROQ_COOLDOWN_UNTIL = time.time() + max(1.0, _GROQ_COOLDOWN_SEC)
                 break
             continue
 
@@ -480,10 +492,10 @@ def anthropic_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, An
 def generate_structured_reply(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not llm_available():
         return None
-    parsed = openai_structured_reply(context)
+    parsed = groq_structured_reply(context)
     if parsed:
         return parsed
-    parsed = groq_structured_reply(context)
+    parsed = openai_structured_reply(context)
     if parsed:
         return parsed
     return anthropic_structured_reply(context)

@@ -273,7 +273,10 @@ def _add_recent(recent_set, value: str):
 # ============================================================
 
 _OTP_RE = re.compile(r"\b(otp|one[-\s]?time\s?password|verification\s?code)\b", re.I)
-_URGENT_RE = re.compile(r"\b(urgent|immediate|within|expire|freeze|blocked|suspend|suspension|last\s?chance)\b", re.I)
+_URGENT_RE = re.compile(
+    r"\b(urgent|immediate|within|expire|freeze|blocked|suspend(?:ed|ing)?|suspension|disable(?:d)?|deactivat(?:e|ed)|last\s?chance)\b",
+    re.I,
+)
 _AUTH_RE = re.compile(r"\b(bank|rbi|world\s?bank|sbi|hdfc|icici|axis|fraud|security|official|manager)\b", re.I)
 # Avoid matching plain "account" (common in legit alerts). Only treat account *details* as payment/data signals.
 _PAY_RE = re.compile(
@@ -282,6 +285,7 @@ _PAY_RE = re.compile(
     re.I,
 )
 _THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|court)\b", re.I)
+_PROCESS_RE = re.compile(r"\b(steps?|process|guide|renew|update|verify|login|app|form)\b", re.I)
 
 
 def scam_signal_score(text: str) -> float:
@@ -303,6 +307,8 @@ def scam_signal_score(text: str) -> float:
         score += 0.6
     if _THREAT_RE.search(text):
         score += 0.8
+    if _PROCESS_RE.search(text):
+        score += 0.4
     return min(score, 5.0)
 
 

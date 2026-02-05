@@ -65,6 +65,8 @@ SOCIAL_IMPERSONATION_RE = re.compile(r"\b(mom|dad|mother|father|cousin|bro|broth
 JOB_SCAM_RE = re.compile(r"(job offer|offer letter|training fee|placement fee)", re.I)
 PARCEL_SCAM_RE = re.compile(r"(parcel|delivery|courier|re-delivery|customs fee|delivery fee)", re.I)
 
+PROCESS_RE = re.compile(r"\b(steps?|process|guide|renew|update|verify|click|link|app|form|login)\b", re.I)
+
 SMALLTALK_RE = re.compile(r"\b(hi|hello|hey|how are you|what's up|whats up|sup|good morning|good night|good evening)\b", re.I)
 THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
 ROBOTIC_RE = re.compile(r"\b(please|kindly|regards|sincerely|apolog|regarding|dear|sir|madam|as per|we advise|we request)\b", re.I)
@@ -155,6 +157,7 @@ class Agent:
             "payment": bool(UPI_RE.search(text) or PAY_RE.search(lower)),
             "account_request": bool(ACCOUNT_REQ_RE.search(lower)),
             "link": bool(URL_RE.search(text)),
+            "process": bool(PROCESS_RE.search(lower)),
             "authority": bool(AUTH_RE.search(lower)),
             "urgency": bool(URGENT_RE.search(lower)),
             "threat": bool(THREAT_RE.search(lower)),
@@ -191,7 +194,14 @@ class Agent:
             return "smalltalk"
         return "scam_pressure" if any([signals.get("otp"), signals.get("payment"), signals.get("link"), signals.get("authority"), signals.get("urgency"), signals.get("threat")]) else "general"
 
-    def _intent_directive(self, intent: str, signals: Dict[str, bool], memory_hint: Optional[str]) -> str:
+    def _intent_directive(
+        self,
+        intent: str,
+        signals: Dict[str, bool],
+        memory_hint: Optional[str],
+        scam_confirmed: bool = False,
+        honeypot_stage: int = 0,
+    ) -> str:
         if intent == "bot_accusation":
             return "deny being a bot in a casual way and deflect; ask them to be clear"
         if intent in ["legit_statement", "legit_transaction"]:
@@ -206,6 +216,26 @@ class Agent:
             return "reply very short like a normal texter (1 line). no long greetings. ask who this is / what's this about"
         if signals.get("repetition"):
             return "you already said that; get slightly annoyed; ask for official email/branch/employee id"
+
+        if scam_confirmed:
+            if honeypot_stage >= 4:
+                return (
+                    "scam confirmed. you're tired/annoyed but still keep them talking. "
+                    "act like you're checking, don't fully shut them down. "
+                    "ask for ONE thing (official link/callback/case id/employee id). "
+                    "acknowledge what they already gave; do not ask 'which bank again'."
+                )
+            if honeypot_stage >= 2:
+                return (
+                    "scam confirmed. play along a bit like you're worried and checking. "
+                    "give tiny hope you're doing it, but stall and extract ONE detail (link/callback/case id/employee id). "
+                    "do NOT repeat the same question back-to-back; do not ask 'who is this' again."
+                )
+            return (
+                "scam likely. be skeptical but engaged. ask for ONE proof (bank-domain email / branch landline / employee id). "
+                "keep it short and human."
+            )
+
         if signals.get("otp") or signals.get("payment") or signals.get("account_request"):
             return (
                 "do NOT share otp/account details. don't be a wall either—sound like a real person under pressure. "
@@ -242,18 +272,18 @@ class Agent:
             # Hard rewrite: assistant-y greetings are a dead giveaway.
             facts = self.s.get("memory_state", {}).get("facts", {}) or {}
             if facts.get("name") or facts.get("bank"):
-                return random.choice([
+                return self._cycle_choice([
                     "ok what's this about?",
                     "haan? what happened",
                     "what is it now",
                     "bol, what's the issue",
-                ])
-            return random.choice([
+                ], "asst_greet_thread")
+            return self._cycle_choice([
                 "who's this?",
                 "who is this",
                 "haan who?",
                 "what is it?",
-            ])
+            ], "asst_greet_new")
         if llm_available() and random.random() < LLM_REPHRASE_PROB:
             alt = rephrase_with_llm(reply)
             if alt:
@@ -310,7 +340,29 @@ class Agent:
         a = a.replace("branch name (not just city)", "exact branch name (not just city)")
         return a
 
-    def _verification_status_line(self, proof_state: Dict[str, Any], verification_asks: List[str], scam_confirmed: bool) -> str:
+    def _cycle_choice(self, options: List[str], key: str) -> str:
+        """
+        Deterministic picker for fallback phrases.
+        We keep rule-based outputs stable (no random template spam), while `_unique_reply`
+        guarantees we never send the exact same message twice.
+        """
+        if not options:
+            return ""
+        flags = self.s.setdefault("flags", {})
+        try:
+            n = int(flags.get(key, 0) or 0)
+        except Exception:
+            n = 0
+        flags[key] = n + 1
+        return options[n % len(options)]
+
+    def _verification_status_line(
+        self,
+        proof_state: Dict[str, Any],
+        verification_asks: List[str],
+        scam_confirmed: bool,
+        honeypot_stage: int = 0,
+    ) -> str:
         """
         Single short line that:
         - acknowledges what they already gave
@@ -356,67 +408,75 @@ class Agent:
         # Preface based on suspicion
         pre = ""
         if "free_email" in suspicious and email_dom:
-            pre = random.choice([
-                f"that's {email_dom}, not bank mail",
-                f"{email_dom} mail isn't official",
-                f"gmail type mail isn't official",
-            ])
+            pre = self._cycle_choice(
+                [
+                    f"that's {email_dom}, not bank mail",
+                    f"{email_dom} mail isn't official",
+                    "gmail type mail isn't official",
+                ],
+                "tone_pre_free_email",
+            )
         elif "landline_looks_mobile" in suspicious:
-            pre = random.choice([
-                "that 'landline' looks like a mobile number",
-                "nah that number looks mobile",
-                "branch landline shouldn't look like mobile",
-            ])
+            pre = self._cycle_choice(
+                [
+                    "that 'landline' looks like a mobile number",
+                    "nah that number looks mobile",
+                    "branch landline shouldn't look like mobile",
+                ],
+                "tone_pre_landline_mobile",
+            )
         elif "landline_fake" in suspicious:
-            pre = random.choice([
-                "that number looks fake",
-                "nah that's not a real branch line",
-                "that's not a landline",
-            ])
+            pre = self._cycle_choice(
+                [
+                    "that number looks fake",
+                    "nah that's not a real branch line",
+                    "that's not a landline",
+                ],
+                "tone_pre_landline_fake",
+            )
         elif "branch_ambiguous" in suspicious:
             if branch and len(branch.split()) == 1:
-                pre = random.choice([f"{branch} is just city", "city isn't branch name"])
+                pre = self._cycle_choice([f"{branch} is just city", "city isn't branch name"], "tone_pre_branch_city")
             elif branch:
-                pre = random.choice([f"'{branch}' is too generic", "need exact branch name"])
+                pre = self._cycle_choice([f"'{branch}' is too generic", "need exact branch name"], "tone_pre_branch_generic")
             else:
                 pre = "branch name missing"
         else:
-            pre = random.choice(["ok", "hmm", "listen", "wait"])
+            pre = self._cycle_choice(["ok", "hmm", "listen", "wait"], "tone_pre_default")
 
         if not ask:
-            return random.choice([
-                "ok what exactly do you want?",
-                "hmm what's the issue then?",
-            ])
+            return self._cycle_choice(
+                ["ok what exactly do you want?", "hmm what's the issue then?"],
+                "tone_no_ask",
+            )
+
+        play = ""
+        if scam_confirmed and honeypot_stage >= 2:
+            # stage 2+ should feel like "i'm checking" (play-along), not pure refusal.
+            play = self._cycle_choice(
+                ["ok ok wait", "haan one sec", "ok hold on", "wait"],
+                "tone_play_along",
+            )
 
         # Honeypot mode: when scam is confirmed, keep them engaged while extracting link/upi/etc.
         if scam_confirmed and "link" in ask:
-            return random.choice([
-                f"ok ok send me {ask}",
-                f"fine. send {ask}",
-                f"send {ask} then. i’ll check",
-            ])
+            if play:
+                return f"{play}. send {ask}"
+            return f"ok. send {ask}"
         if scam_confirmed and "upi" in ask:
-            return random.choice([
-                f"upi for what? send {ask}",
-                f"ok which upi? send {ask}",
-                f"send {ask} first, then we talk",
-            ])
+            if play:
+                return f"{play}. upi for what? send {ask}"
+            return f"upi for what? send {ask}"
 
         if ("free_email" in suspicious) or ("landline_looks_mobile" in suspicious) or ("landline_fake" in suspicious) or ("branch_ambiguous" in suspicious):
-            opts = [f"{pre}. send {ask}"]
-            if who:
-                opts.append(f"ya {who}, but {pre}. send {ask}")
-            else:
-                opts.append(f"ya but {pre}. send {ask}")
-            return random.choice(opts)
+            if play:
+                return f"{play}. {pre}. send {ask}"
+            return f"{pre}. send {ask}"
 
-        opts = [f"{pre}. send {ask}", f"ok, still need {ask}"]
-        if who:
-            opts.append(f"ya {who}, but {pre}. send {ask}")
-        else:
-            opts.append(f"ya but {pre}. send {ask}")
-        return random.choice(opts)
+        # default proof ask (short)
+        if play:
+            return f"{play}. still need {ask}"
+        return self._cycle_choice([f"{pre}. send {ask}", f"ok, still need {ask}"], "tone_default_ask")
 
     def _maybe_append_followup(self, reply: str, follow: str) -> str:
         r = (reply or "").strip()
@@ -438,6 +498,78 @@ class Agent:
         if len(r) > 160:
             return r
         return f"{r} {f}".strip()
+
+    def _next_honeypot_ask(
+        self,
+        signals: Dict[str, bool],
+        proof_state: Dict[str, Any],
+        profile_now: Dict[str, Any],
+    ) -> str:
+        """
+        Ask ladder to avoid fixation and to extract intel without rushing.
+        Order: link → callback/branch line → employee id → bank-domain email → case/ticket id
+        (UPI is inserted only when payment/UPI is in play).
+        """
+        flags = self.s.setdefault("flags", {})
+        try:
+            idx = int(flags.get("ask_cycle_idx", 0) or 0)
+        except Exception:
+            idx = 0
+
+        # Insert UPI only when payment is actively in play.
+        order = ["link", "callback", "employee_id", "email", "ticket"]
+        if signals.get("payment") and not (profile_now or {}).get("upi"):
+            order = ["link", "upi", "callback", "employee_id", "email", "ticket"]
+
+        missing_low = " ".join([str(m).lower() for m in (proof_state.get("missing") or [])])
+        suspicious = set(proof_state.get("suspicious") or [])
+
+        def need(kind: str) -> bool:
+            prof = profile_now or {}
+            if kind == "link":
+                # Don't ask for a link unless the convo is already about steps/otp/payment/link.
+                if bool(prof.get("url")):
+                    return False
+                return bool(signals.get("link") or signals.get("process") or signals.get("otp") or signals.get("payment"))
+            if kind == "upi":
+                return signals.get("payment") and not bool(prof.get("upi"))
+            if kind == "callback":
+                # ask again if missing OR flagged suspicious
+                return ("landline" in missing_low) or ("landline_looks_mobile" in suspicious) or ("landline_fake" in suspicious)
+            if kind == "employee_id":
+                return not bool(prof.get("employee_id"))
+            if kind == "email":
+                return ("bank-domain email" in missing_low) or ("bank email" in missing_low) or ("free_email" in suspicious)
+            if kind == "ticket":
+                return True
+            return False
+
+        # Prefer a different ask than last time if possible.
+        last_kind = str(flags.get("last_ask_kind") or "").strip()
+        chosen_kind = ""
+        for off in range(len(order)):
+            k = order[(idx + off) % len(order)]
+            if not need(k):
+                continue
+            if last_kind and k == last_kind and any(need(x) for x in order if x != k):
+                continue
+            chosen_kind = k
+            break
+        if not chosen_kind:
+            chosen_kind = "ticket"
+
+        flags["ask_cycle_idx"] = (idx + 1) % max(1, len(order))
+        flags["last_ask_kind"] = chosen_kind
+
+        ask_map = {
+            "link": "the link you're asking me to open",
+            "upi": "the upi id / beneficiary you're asking me to send to",
+            "callback": "branch landline (not mobile)",
+            "employee_id": "employee id",
+            "email": "official bank-domain email (not gmail)",
+            "ticket": "case/ticket id or reference number",
+        }
+        return ask_map.get(chosen_kind, "official proof")
 
     def _guardrails(self, reply: str) -> str:
         if not reply:
@@ -472,10 +604,9 @@ class Agent:
                 reply = " ".join(reply.split()[:12])
             elif len(reply) > 80 and random.random() < 0.15:
                 reply = " ".join(reply.split()[:16])
-            # length variation for tests/human feel
-            if len(reply) < 40 and random.random() < 0.3:
-                # Avoid generic "explain" loops; keep it as light human filler instead.
-                reply = f"{reply} {random.choice(['??', 'ya', 'hmm', 'ok'])}"
+            # NOTE: do not append random fillers like "ya" / "ok" to short replies.
+            # It reads weird in serious threads and feels template-y. Uniqueness is
+            # handled deterministically below when an exact repeat happens.
 
         # --- enforce no exact repeats (deterministic, not luck-based) ---
         reply = re.sub(r"\s+", " ", (reply or "").strip())
@@ -522,108 +653,133 @@ class Agent:
         self.s["recent_raw_responses"] = recent_raw[-200:]
         return reply
 
-    def _fallback_reply(self, incoming: str, signals: Dict[str, bool]) -> str:
+    def _fallback_reply(
+        self,
+        incoming: str,
+        signals: Dict[str, bool],
+        proof_state: Optional[Dict[str, Any]] = None,
+        verification_asks: Optional[List[str]] = None,
+        scam_confirmed: bool = False,
+        honeypot_stage: int = 0,
+        memory_hint: Optional[str] = None,
+    ) -> str:
         lower = (incoming or "").lower()
+        proof = proof_state or self.memory.compute_proof_state()
+        profile_now = self.s.get("extracted_profile", {}) or {}
+
+        # Determine the "one thing" we want next.
+        asks = list(verification_asks or [])
+        if not asks:
+            asks = [self._next_honeypot_ask(signals, proof, profile_now)] if (scam_confirmed or self.s.get("flags", {}).get("scam_confirmed")) else list(proof.get("asks") or [])
+        asks = asks[:1]
+
+        # Highest priority: if they just sent a link/upi/id/number, stay on that thread.
+        if URL_RE.search(incoming or ""):
+            # Don't echo the link; ask for official site/domain.
+            return self._cycle_choice(
+                [
+                    "hmm link? which site is that. send official bank link",
+                    "ok i see a link. what's the official bank site link?",
+                    "link looks off. send the official site link",
+                ],
+                "fb_link",
+            )
+        if UPI_RE.search(incoming or "") or ("upi" in lower and signals.get("payment")):
+            # Keep them talking; don't reveal/confirm any UPI.
+            return self._cycle_choice(
+                [
+                    "upi for what exactly? im not sending anything. send case/ticket id",
+                    "why upi? what's the official reference/case id",
+                    "upi?? no. send the official link + case id",
+                ],
+                "fb_upi",
+            )
 
         if signals.get("bot_accusation"):
-            return "nah, just tell me properly"
+            return self._cycle_choice(
+                ["nah lol. just say what you want", "what? just tell me clearly", "what? i'm typing normal. say it straight"],
+                "fb_bot",
+            )
         if signals.get("typing_accusation"):
-            return random.choice([
-                "typing off? just say what you want",
-                "im typing normal lol. what is it?",
-                "what? im typing fine. what's this about",
-            ])
+            return self._cycle_choice(
+                [
+                    "typing off? just say what you want",
+                    "im typing normal. what is it?",
+                    "what? i'm typing fine. what's this about",
+                ],
+                "fb_typing",
+            )
         if signals.get("clarification_request"):
-            pressure = any([
-                signals.get("otp"),
-                signals.get("payment"),
-                signals.get("link"),
-                signals.get("authority"),
-                signals.get("urgency"),
-                signals.get("threat"),
-                signals.get("account_request"),
-                self.s.get("flags", {}).get("otp_ask_count", 0) > 0,
-            ])
-            if pressure:
-                return random.choice([
-                    "explain why you need otp + which branch you're from + official email",
-                    "ok explain what you want. send employee id + branch landline",
-                    "why otp? tell branch + official email + your id, then talk",
-                ])
-            return random.choice([
-                "explain what exactly?",
-                "about what? just say it straight",
-            ])
+            ask0 = self._humanize_ask(asks[0]) if asks else "official proof"
+            # Never loop "explain" — be specific about what you need.
+            if scam_confirmed or any([signals.get("otp"), signals.get("payment"), signals.get("link"), signals.get("authority"), signals.get("urgency"), signals.get("threat")]):
+                return self._cycle_choice(
+                    [
+                        f"what exactly are the steps? and send {ask0}",
+                        f"ok, what do you want me to do? send {ask0}",
+                        f"say it straight. send {ask0}",
+                    ],
+                    "fb_clarify_pressure",
+                )
+            return self._cycle_choice(["about what exactly?", "what are you talking about?"], "fb_clarify")
+
         if signals.get("ask_profile"):
             return self.memory.answer_profile_question()
         if signals.get("memory_probe"):
             return self.memory.answer_memory_question()
         if signals.get("told_you"):
-            return self.memory.answer_verification_status()
+            # Use proof-aware line (deterministic) instead of a random template.
+            return memory_hint or self._verification_status_line(proof, asks, scam_confirmed=scam_confirmed, honeypot_stage=honeypot_stage)
+
         if signals.get("transaction_alert"):
             return "if it's not me i'll call the bank now"
         if signals.get("legit_statement"):
-            return "noted, i'll check later"
+            return "ok noted"
         if signals.get("social_impersonation"):
             if "boss" in lower or "manager" in lower:
-                return "call me from office line, not this"
-            return "call me, this number feels off"
+                return "call me from office number, not this"
+            return "call me. this number feels off"
         if signals.get("job_scam"):
             return "real jobs don't ask money"
         if signals.get("parcel_scam"):
             return "i'll check the official courier app"
 
-        # Thread continuity fallback: if we already have a bank/authority thread going,
-        # don't return random generic lines for short/unhelpful messages.
-        facts = self.s.get("memory_state", {}).get("facts", {}) or {}
+        # Bank/scam thread: default to proof-aware ask ladder.
         in_bank_thread = bool(
-            facts.get("bank")
+            (self.s.get("memory_state", {}).get("facts", {}) or {}).get("bank")
             or self.s.get("flags", {}).get("scam_confirmed")
             or self.s.get("flags", {}).get("otp_ask_count", 0) > 0
         )
         if in_bank_thread and not any([signals.get("legit_statement"), signals.get("transaction_alert"), signals.get("smalltalk")]):
-            proof = self.memory.compute_proof_state()
-            asks = list(proof.get("asks") or [])
-            if proof.get("missing"):
-                return self._verification_status_line(
-                    proof,
-                    asks,
-                    scam_confirmed=bool(self.s.get("flags", {}).get("scam_confirmed")),
-                )
-        if signals.get("authority") or signals.get("urgency") or signals.get("threat"):
-            return self.memory.answer_verification_status()
+            return self._verification_status_line(proof, asks, scam_confirmed=scam_confirmed, honeypot_stage=honeypot_stage)
+
         if signals.get("otp"):
-            return "otp is private, not sharing"
+            ask0 = self._humanize_ask(asks[0]) if asks else "official proof"
+            return f"otp?? no. send {ask0}"
         if signals.get("payment") or signals.get("account_request"):
-            return "not sharing account details on text"
-        if "ifsc" in lower or "id" in lower or "employee" in lower:
-            return self.memory.answer_verification_status()
+            ask0 = self._humanize_ask(asks[0]) if asks else "official proof"
+            return f"not doing payment on text. send {ask0}"
         if signals.get("link"):
-            return "link looks fake, send official site"
+            return "link looks fake. send official site"
         if signals.get("confused"):
+            ask0 = self._humanize_ask(asks[0]) if asks else "official proof"
             if any([signals.get("otp"), signals.get("payment"), signals.get("authority"), signals.get("urgency")]):
-                return "huh? why otp. send official email/branch and explain"
+                return f"huh? why otp. send {ask0}"
             return "huh? what exactly"
 
         if signals.get("smalltalk"):
-            return "hey, what's this about"
+            facts = self.s.get("memory_state", {}).get("facts", {}) or {}
+            if facts.get("name") or facts.get("bank"):
+                return "what's this about?"
+            return self._cycle_choice(["who?", "who's this?"], "fb_hi")
         if signals.get("thanks"):
             return "ok"
 
-        # if OTP/scam was already in the thread, keep asking for verification instead of looping "explain"
-        if self.s.get("flags", {}).get("otp_ask_count", 0) > 0 and not any([signals.get("legit_statement"), signals.get("transaction_alert")]):
-            return random.choice([
-                "ok then send branch + official email + your id",
-                "give employee id + branch landline. i'll verify",
-                "send official email from bank domain, then talk",
-            ])
-
-        # generic fallback
-        return random.choice([
-            "what's this about exactly?",
-            "ok but what's the actual issue?",
-            "hmm. what do you need from me?",
-        ])
+        # generic fallback (keep it short, non-assistant-y)
+        return self._cycle_choice(
+            ["what's this about", "ok what happened", "hmm what do you want"],
+            "fb_generic",
+        )
 
     # ----------------------------
     # Main response
@@ -697,16 +853,43 @@ class Agent:
         if signals.get("legit_statement") or signals.get("transaction_alert"):
             score_now = max(0.0, score_now - 1.0)
         score_now = min(score_now, 5.0)
+        incoming_low = incoming.lower()
         legitish = any([signals.get("legit_statement"), signals.get("transaction_alert")])
+        bank_thread = bool(facts_now.get("bank")) or bool(BANK_RE.search(incoming or "")) or bool(re.search(r"\bbank\b", incoming_low)) or bool(re.search(r"\brbi\b|\bworld\s*bank\b", incoming_low))
+        classic_flow = bool(
+            bank_thread
+            and (not legitish)
+            and (
+                signals.get("otp")
+                or signals.get("payment")
+                or signals.get("link")
+                or (signals.get("process") and (signals.get("urgency") or signals.get("threat")))
+                or ("follow my steps" in incoming_low)
+                or ("suspicious activity" in incoming_low)
+                or ("renew" in incoming_low or "verify" in incoming_low or "update" in incoming_low)
+            )
+        )
         scam_confirmed = bool(self.s.get("flags", {}).get("scam_confirmed")) or (
             (score_now >= 2.5 and not legitish)
             # Slightly earlier confirmation for classic "bank + freeze/urgency" pressure, even before OTP/link shows up.
-            or (score_now >= 2.0 and signals.get("authority") and (signals.get("urgency") or signals.get("threat")) and not legitish)
+            or (score_now >= 2.0 and bank_thread and (signals.get("urgency") or signals.get("threat")) and not legitish)
+            # Bank thread + process pressure (common scam scripts) should flip earlier.
+            or classic_flow
+            # OTP request is a strong scam signal even without a bank keyword.
+            or (signals.get("otp") and (not legitish) and score_now >= 1.5)
         )
         if scam_confirmed:
             self.s.setdefault("flags", {})["scam_confirmed"] = True
             if intent_hint == "general":
                 intent_hint = "scam_pressure"
+
+        # Honeypot stage (helps LLM drift from skeptical -> play-along -> stall).
+        honeypot_stage = int(self.s.get("flags", {}).get("honeypot_stage", 0) or 0)
+        if scam_confirmed:
+            honeypot_stage = 1 if honeypot_stage <= 0 else min(6, honeypot_stage + 1)
+            self.s.setdefault("flags", {})["honeypot_stage"] = honeypot_stage
+        else:
+            honeypot_stage = 0
 
         # What intel we still want to extract (helps LLM pick useful questions).
         profile_now = self.s.get("extracted_profile", {}) or {}
@@ -724,34 +907,22 @@ class Agent:
                 intel_targets.append("their bank-domain email")
         intel_targets = intel_targets[:3]
 
-        # If we already have basic proofs but scam is confirmed, switch into intel-extraction asks
-        # instead of repeating verification over and over.
-        if scam_confirmed and not verification_asks:
-            if not profile_now.get("url"):
-                verification_asks = ["the link you're asking me to open"]
+        # Decide the ONE next ask (avoid proof loops + avoid rushing).
+        if scam_confirmed:
+            # stage 1: skeptical verify first unless they're already pushing steps/link/otp/payment
+            if honeypot_stage <= 1 and not any([signals.get("process"), signals.get("link"), signals.get("otp"), signals.get("payment")]):
+                verification_asks = (verification_asks[:1] if verification_asks else ["official bank-domain email (not gmail)"])
             else:
-                verification_asks = ["case/ticket id or reference number"]
+                verification_asks = [self._next_honeypot_ask(signals, proof_state, profile_now)]
+        else:
+            verification_asks = verification_asks[:1]
 
-        # Honeypot behavior: when they describe "steps/process", ask for the link/beneficiary early to extract intel.
-        incoming_low = incoming.lower()
-        suspicionish = scam_confirmed or any(
-            [
-                signals.get("authority"),
-                signals.get("urgency"),
-                signals.get("threat"),
-                signals.get("otp"),
-                signals.get("payment"),
-            ]
-        )
-        if suspicionish and not profile_now.get("url"):
-            if any(w in incoming_low for w in ["click", "link", "steps", "step", "process", "guide", "renew", "update", "verify", "app", "form"]):
-                link_ask = "the link you're asking me to open"
-                verification_asks = [link_ask] + [a for a in verification_asks if a != link_ask]
-        if scam_confirmed and signals.get("payment") and not profile_now.get("upi"):
-            upi_ask = "the upi id / beneficiary you're asking me to send to"
-            verification_asks = [upi_ask] + [a for a in verification_asks if a != upi_ask]
-
-        verification_asks = verification_asks[:2]
+        # If we're in honeypot mode and about to repeat the exact same ask, move the ladder forward.
+        last_ask = self.s.get("flags", {}).get("last_verification_ask")
+        if scam_confirmed and honeypot_stage >= 2 and last_ask and verification_asks and verification_asks[0] == last_ask:
+            alt = self._next_honeypot_ask(signals, proof_state, profile_now)
+            if alt and alt != verification_asks[0]:
+                verification_asks = [alt]
 
         # Rotate asks to avoid asking the *same* thing back-to-back when they keep dodging.
         last_ask = self.s.get("flags", {}).get("last_verification_ask")
@@ -760,7 +931,12 @@ class Agent:
 
         # Override memory hints with proof-aware, honeypot-friendly wording.
         if signals.get("told_you"):
-            memory_hint = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+            memory_hint = self._verification_status_line(
+                proof_state,
+                verification_asks,
+                scam_confirmed=scam_confirmed,
+                honeypot_stage=honeypot_stage,
+            )
         if signals.get("clarification_request") and any(
             [
                 scam_confirmed,
@@ -773,37 +949,38 @@ class Agent:
             ]
         ):
             ask0 = self._humanize_ask(verification_asks[0]) if verification_asks else "official proof"
-            memory_hint = random.choice(
+            memory_hint = self._cycle_choice(
                 [
-                    f"explain what? what exactly you want me to do + send {ask0}",
-                    f"ok, what are the steps? and send {ask0}",
-                    f"what do you want from me? send {ask0} first",
-                ]
+                    f"what exactly you want me to do? send {ask0}",
+                    f"ok, what are the steps? send {ask0}",
+                    f"just say it straight. send {ask0}",
+                ],
+                "clarify_hint",
             )
 
         # If they reply with a bare number and it looks like a fake/mobile "landline", call it out immediately.
         if re.fullmatch(r"[\d\s\-\+\(\)]+", (incoming or "").strip() or "") and re.search(r"\d{8,13}", incoming or ""):
             susp_now = set(proof_state.get("suspicious") or [])
             if ("landline_fake" in susp_now) or ("landline_looks_mobile" in susp_now):
-                memory_hint = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                memory_hint = self._verification_status_line(
+                    proof_state,
+                    verification_asks,
+                    scam_confirmed=scam_confirmed,
+                    honeypot_stage=honeypot_stage,
+                )
                 force_memory_hint = True
-
-        # Honeypot stage (helps LLM drift from skeptical -> play-along -> stall).
-        honeypot_stage = int(self.s.get("flags", {}).get("honeypot_stage", 0) or 0)
-        if scam_confirmed:
-            honeypot_stage = 1 if honeypot_stage <= 0 else min(6, honeypot_stage + 1)
-            self.s.setdefault("flags", {})["honeypot_stage"] = honeypot_stage
-        else:
-            honeypot_stage = 0
 
         if signals.get("otp") and self.s["flags"].get("otp_ask_count", 0) == 1:
             # First OTP ask: probe for proof (not a generic OTP refusal).
-            ask = verification_asks[0] if verification_asks else "official bank-domain email"
-            otp_probe_hint = random.choice([
-                f"otp?? why do you need otp. send {ask} first",
-                f"no otp on text. send {ask}",
-                f"before otp, send {ask}",
-            ])
+            ask = self._humanize_ask(verification_asks[0]) if verification_asks else "bank email (not gmail)"
+            otp_probe_hint = self._cycle_choice(
+                [
+                    f"otp?? why do you need otp. send {ask} first",
+                    f"no otp on text. send {ask}",
+                    f"before otp, send {ask}",
+                ],
+                "otp_probe",
+            )
 
         # LLM-first
         llm_used = False
@@ -811,7 +988,13 @@ class Agent:
         llm_out = None
 
         if llm_available():
-            directive = self._intent_directive(intent_hint, signals, memory_hint)
+            directive = self._intent_directive(
+                intent_hint,
+                signals,
+                memory_hint,
+                scam_confirmed=scam_confirmed,
+                honeypot_stage=honeypot_stage,
+            )
             context = {
                 "incoming": incoming,
                 "intent_hint": intent_hint,
@@ -861,7 +1044,15 @@ class Agent:
 
         # Guardrail: if the model leaks internal prompt/context tokens, drop to a safe fallback.
         if reply and PROMPT_LEAK_RE.search(str(reply)):
-            reply = otp_probe_hint or memory_hint or self._fallback_reply(incoming, signals)
+            reply = otp_probe_hint or memory_hint or self._fallback_reply(
+                incoming,
+                signals,
+                proof_state=proof_state,
+                verification_asks=verification_asks,
+                scam_confirmed=scam_confirmed,
+                honeypot_stage=honeypot_stage,
+                memory_hint=memory_hint,
+            )
 
         # Some cases must be deterministic (e.g., fake/masked landline): force the proof-aware line.
         if force_memory_hint and memory_hint:
@@ -885,11 +1076,52 @@ class Agent:
                     or facts_now.get("bank")
                     or IDENTITY_LOOP_RE.search((prev_bot or "").lower())
                 ):
-                    reply = memory_hint or self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                    reply = memory_hint or self._verification_status_line(
+                        proof_state,
+                        verification_asks,
+                        scam_confirmed=scam_confirmed,
+                        honeypot_stage=honeypot_stage,
+                    )
                     rlow = reply.lower()
             if DISMISSIVE_RE.search(rlow):
-                reply = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                reply = self._verification_status_line(
+                    proof_state,
+                    verification_asks,
+                    scam_confirmed=scam_confirmed,
+                    honeypot_stage=honeypot_stage,
+                )
                 rlow = reply.lower()
+
+            # Loop breaker: don't ask "which bank/name again" if we already have it.
+            if facts_now.get("bank") and re.search(r"\b(which\s+bank|what\s+bank)\b", rlow):
+                reply = memory_hint or self._verification_status_line(
+                    proof_state,
+                    verification_asks,
+                    scam_confirmed=scam_confirmed,
+                    honeypot_stage=honeypot_stage,
+                )
+                rlow = reply.lower()
+            if facts_now.get("name") and re.search(r"\b(what'?s\s+your\s+name|what\s+is\s+your\s+name|tell\s+me\s+your\s+name|your\s+name\?)\b", rlow):
+                reply = memory_hint or self._verification_status_line(
+                    proof_state,
+                    verification_asks,
+                    scam_confirmed=scam_confirmed,
+                    honeypot_stage=honeypot_stage,
+                )
+                rlow = reply.lower()
+
+            # If they just sent a URL but the reply ignores it, force a link-aware line.
+            if URL_RE.search(incoming or "") and not any(k in rlow for k in ["link", "site", "website", "domain"]):
+                reply = self._fallback_reply(
+                    incoming,
+                    signals,
+                    proof_state=proof_state,
+                    verification_asks=verification_asks,
+                    scam_confirmed=scam_confirmed,
+                    honeypot_stage=honeypot_stage,
+                    memory_hint=memory_hint,
+                )
+                rlow = (reply or "").lower()
 
             # When they claim "bank" but haven't said the issue yet, keep the thread natural:
             # ask "what's this about" before jumping into proof-checklists.
@@ -921,23 +1153,69 @@ class Agent:
             asks_landline = bool(re.search(r"\b(landline|office line|branch line)\b", rlow) and re.search(r"\b(send|share|give)\b", rlow))
 
             if (asks_emp and emp_ok) or (asks_branch and branch_ok) or (asks_email and email_ok) or (asks_landline and landline_ok):
-                reply = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                reply = self._verification_status_line(
+                    proof_state,
+                    verification_asks,
+                    scam_confirmed=scam_confirmed,
+                    honeypot_stage=honeypot_stage,
+                )
+                rlow = (reply or "").lower()
+
+            # Post-LLM enforcement: in honeypot stage 2+, ensure we actually ask the "one next thing"
+            # instead of generic skepticism lines.
+            if scam_confirmed and honeypot_stage >= 2 and verification_asks:
+                ask0 = str(verification_asks[0] or "").lower()
+                wants: List[str] = []
+                if "email" in ask0 or "mail" in ask0:
+                    wants = ["email", "mail"]
+                elif "landline" in ask0 or "branch line" in ask0 or "office line" in ask0:
+                    wants = ["landline", "call", "number", "line"]
+                elif "link" in ask0 or "site" in ask0 or "domain" in ask0:
+                    wants = ["link", "site", "domain", "website"]
+                elif "upi" in ask0 or "beneficiary" in ask0:
+                    wants = ["upi", "beneficiary"]
+                elif "employee" in ask0 or "emp" in ask0 or re.search(r"\b id\b", ask0):
+                    wants = ["id", "employee", "emp"]
+                elif "ticket" in ask0 or "case" in ask0 or "reference" in ask0 or "ref" in ask0:
+                    wants = ["ticket", "case", "reference", "ref"]
+
+                if wants and not any(w in rlow for w in wants):
+                    reply = self._verification_status_line(
+                        proof_state,
+                        verification_asks,
+                        scam_confirmed=scam_confirmed,
+                        honeypot_stage=honeypot_stage,
+                    )
+                    rlow = (reply or "").lower()
 
             # Don't allow the LLM to invent contradictions; only mention them if we have any recorded.
             if not (self.s.get("memory_state", {}).get("contradictions") or []) and CONTRADICTION_TALK_RE.search(rlow):
-                reply = random.choice([
-                    "huh? just say what you want",
-                    "what are you even saying. just tell me clearly",
-                ])
+                reply = self._cycle_choice(
+                    ["huh? just say what you want", "what are you even saying. just tell me clearly"],
+                    "no_contra",
+                )
 
             # If we're still missing proof, don't let the reply sound "convinced".
             if proof_state.get("missing") and re.search(r"\b(ok|okay|cool)\s+got it\b|\bgot it\b", rlow):
-                reply = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                reply = self._verification_status_line(
+                    proof_state,
+                    verification_asks,
+                    scam_confirmed=scam_confirmed,
+                    honeypot_stage=honeypot_stage,
+                )
 
             # Clarification loop breaker: must be specific, not "explain" spam.
             if signals.get("clarification_request"):
                 if "explain" in rlow and not any(k in rlow for k in ["branch", "email", "employee", "landline", "link", "call", "upi", "ticket"]):
-                    reply = memory_hint or self._fallback_reply(incoming, signals)
+                    reply = memory_hint or self._fallback_reply(
+                        incoming,
+                        signals,
+                        proof_state=proof_state,
+                        verification_asks=verification_asks,
+                        scam_confirmed=scam_confirmed,
+                        honeypot_stage=honeypot_stage,
+                        memory_hint=memory_hint,
+                    )
 
         # enforce memory accuracy when asked directly
         if memory_hint and reply:
@@ -961,10 +1239,23 @@ class Agent:
         if reply and not signals.get("smalltalk"):
             pressure = any([signals.get("urgency"), signals.get("threat"), signals.get("authority"), signals.get("otp"), signals.get("payment"), signals.get("link")])
             if pressure and len(str(reply).split()) <= 3:
-                reply = memory_hint or self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                reply = memory_hint or self._verification_status_line(
+                    proof_state,
+                    verification_asks,
+                    scam_confirmed=scam_confirmed,
+                    honeypot_stage=honeypot_stage,
+                )
 
         if not reply:
-            reply = otp_probe_hint or memory_hint or self._fallback_reply(incoming, signals)
+            reply = otp_probe_hint or memory_hint or self._fallback_reply(
+                incoming,
+                signals,
+                proof_state=proof_state,
+                verification_asks=verification_asks,
+                scam_confirmed=scam_confirmed,
+                honeypot_stage=honeypot_stage,
+                memory_hint=memory_hint,
+            )
 
         # repetition escalation enforce keywords
         if signals.get("repetition"):
@@ -993,7 +1284,12 @@ class Agent:
         if IDENTITY_LOOP_RE.search((reply or "").lower()):
             facts_now2 = self.s.get("memory_state", {}).get("facts", {}) or {}
             if facts_now2.get("name") or facts_now2.get("bank") or self.s.get("flags", {}).get("otp_ask_count", 0) > 0:
-                reply = memory_hint or self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                reply = memory_hint or self._verification_status_line(
+                    proof_state,
+                    verification_asks,
+                    scam_confirmed=scam_confirmed,
+                    honeypot_stage=honeypot_stage,
+                )
                 reply = self._guardrails(reply)
         reply = self._unique_reply(reply, allow_variation=allow_variation)
         self.memory.add_bot_message(reply)
