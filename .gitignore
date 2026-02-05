@@ -4,3 +4,4 @@ __pycache__/
 .env
 learning_data/
 koyeb_smoke.log
+koyeb_smoke_planmode.log
