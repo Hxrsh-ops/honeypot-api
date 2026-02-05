@@ -325,6 +325,23 @@ class Agent:
         elif missing:
             ask = missing[0]
 
+        # If something is clearly suspicious, prioritize asking for the *fixed* version of that proof.
+        if "free_email" in suspicious:
+            for cand in [*verification_asks, *missing]:
+                if "email" in str(cand).lower():
+                    ask = cand
+                    break
+        if ("landline_looks_mobile" in suspicious) or ("landline_fake" in suspicious):
+            for cand in [*verification_asks, *missing]:
+                if "landline" in str(cand).lower():
+                    ask = cand
+                    break
+        if "branch_ambiguous" in suspicious:
+            for cand in [*verification_asks, *missing]:
+                if "branch name" in str(cand).lower():
+                    ask = cand
+                    break
+
         ask = self._humanize_ask(ask)
 
         # Preface based on suspicion
@@ -608,6 +625,7 @@ class Agent:
             signals["repetition"] = True
 
         memory_hint = None
+        force_memory_hint = False
         if signals.get("ask_profile"):
             memory_hint = self.memory.answer_profile_question()
         elif signals.get("memory_probe"):
@@ -711,6 +729,7 @@ class Agent:
             susp_now = set(proof_state.get("suspicious") or [])
             if ("landline_fake" in susp_now) or ("landline_looks_mobile" in susp_now):
                 memory_hint = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                force_memory_hint = True
 
         # Honeypot stage (helps LLM drift from skeptical -> play-along -> stall).
         honeypot_stage = int(self.s.get("flags", {}).get("honeypot_stage", 0) or 0)
@@ -786,6 +805,10 @@ class Agent:
         # Guardrail: if the model leaks internal prompt/context tokens, drop to a safe fallback.
         if reply and PROMPT_LEAK_RE.search(str(reply)):
             reply = otp_probe_hint or memory_hint or self._fallback_reply(incoming, signals)
+
+        # Some cases must be deterministic (e.g., fake/masked landline): force the proof-aware line.
+        if force_memory_hint and memory_hint:
+            reply = memory_hint
 
         # loop-breaker: if the reply asks again for proof we already have, replace with a
         # short "got it / here's what's missing" line.
