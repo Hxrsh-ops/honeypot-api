@@ -362,7 +362,7 @@ class Agent:
             pre = random.choice([
                 "that number looks fake",
                 "nah that's not a real branch line",
-                "send the real branch landline",
+                "bro that's not a landline",
             ])
         elif "branch_ambiguous" in suspicious:
             if branch and len(branch.split()) == 1:
