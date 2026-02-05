@@ -70,10 +70,11 @@ THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
 ROBOTIC_RE = re.compile(r"\b(please|kindly|regards|sincerely|apolog|regarding|dear|sir|madam|as per|we advise|we request)\b", re.I)
 IDENTITY_LOOP_RE = re.compile(
     r"\b("
-    r"who('?s| is)\s+this|"
+    # accept straight/curly apostrophes and even "whos"
+    r"who(?:['\u2019]s|s| is)\s+this|"
     r"who\s+r\s+(?:u|you)|"
     r"who\s+are\s+(?:u|you)|"
-    r"who're\s+you"
+    r"who['\u2019]re\s+you"
     r")\b",
     re.I,
 )
