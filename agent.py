@@ -394,6 +394,12 @@ class Agent:
                 f"send {ask} first, then we talk",
             ])
 
+        if ("free_email" in suspicious) or ("landline_looks_mobile" in suspicious) or ("landline_fake" in suspicious) or ("branch_ambiguous" in suspicious):
+            return random.choice([
+                f"{pre}. send {ask}",
+                f"ya {who}, but {pre}. send {ask}",
+            ])
+
         return random.choice([
             f"{pre}. send {ask}",
             f"ya {who}, but {pre}. send {ask}",
