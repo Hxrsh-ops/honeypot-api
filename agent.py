@@ -68,7 +68,15 @@ PARCEL_SCAM_RE = re.compile(r"(parcel|delivery|courier|re-delivery|customs fee|d
 SMALLTALK_RE = re.compile(r"\b(hi|hello|hey|how are you|what's up|whats up|sup|good morning|good night|good evening)\b", re.I)
 THANKS_RE = re.compile(r"\b(thanks|thank you|thx|ty)\b", re.I)
 ROBOTIC_RE = re.compile(r"\b(please|kindly|regards|sincerely|apolog|regarding|dear|sir|madam|as per|we advise|we request)\b", re.I)
-IDENTITY_LOOP_RE = re.compile(r"\b(who('?s| is)\s+this|who r u|who are you)\b", re.I)
+IDENTITY_LOOP_RE = re.compile(
+    r"\b("
+    r"who('?s| is)\s+this|"
+    r"who\s+r\s+(?:u|you)|"
+    r"who\s+are\s+(?:u|you)|"
+    r"who're\s+you"
+    r")\b",
+    re.I,
+)
 ASSISTANTY_RE = re.compile(
     r"\b("
     r"thanks for reaching out|"
