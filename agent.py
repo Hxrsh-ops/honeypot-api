@@ -706,6 +706,12 @@ class Agent:
                 ]
             )
 
+        # If they reply with a bare number and it looks like a fake/mobile "landline", call it out immediately.
+        if re.fullmatch(r"[\d\s\-\+\(\)]+", (incoming or "").strip() or "") and re.search(r"\d{8,13}", incoming or ""):
+            susp_now = set(proof_state.get("suspicious") or [])
+            if ("landline_fake" in susp_now) or ("landline_looks_mobile" in susp_now):
+                memory_hint = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+
         # Honeypot stage (helps LLM drift from skeptical -> play-along -> stall).
         honeypot_stage = int(self.s.get("flags", {}).get("honeypot_stage", 0) or 0)
         if scam_confirmed:
@@ -804,6 +810,21 @@ class Agent:
             if DISMISSIVE_RE.search(rlow):
                 reply = self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
                 rlow = reply.lower()
+
+            # When they claim "bank" but haven't said the issue yet, keep the thread natural:
+            # ask "what's this about" before jumping into proof-checklists.
+            if signals.get("authority") and not any(
+                [
+                    signals.get("urgency"),
+                    signals.get("threat"),
+                    signals.get("otp"),
+                    signals.get("payment"),
+                    signals.get("link"),
+                ]
+            ):
+                if ("send" in rlow) and not re.search(r"\b(what|about|issue|happen|why)\b", rlow):
+                    reply = f"what's this about? {reply}".strip()
+                    rlow = reply.lower()
             missing_low = " ".join([str(m).lower() for m in (proof_state.get("missing") or [])])
             need_email = ("bank-domain email" in missing_low) or ("bank email" in missing_low)
             need_landline = "landline" in missing_low
