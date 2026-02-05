@@ -275,7 +275,12 @@ def _add_recent(recent_set, value: str):
 _OTP_RE = re.compile(r"\b(otp|one[-\s]?time\s?password|verification\s?code)\b", re.I)
 _URGENT_RE = re.compile(r"\b(urgent|immediate|within|expire|freeze|blocked|suspend|suspension|last\s?chance)\b", re.I)
 _AUTH_RE = re.compile(r"\b(bank|rbi|world\s?bank|sbi|hdfc|icici|axis|fraud|security|official|manager)\b", re.I)
-_PAY_RE = re.compile(r"\b(upi|transfer|pay|payment|refund|charge|fee|ifsc|account|beneficiary)\b", re.I)
+# Avoid matching plain "account" (common in legit alerts). Only treat account *details* as payment/data signals.
+_PAY_RE = re.compile(
+    r"\b(upi|transfer|pay|payment|refund|charge|fee|ifsc|beneficiary|amount|transaction|"
+    r"account\s*(?:number|no\.?)|acc\s*no\.?|a/c)\b",
+    re.I,
+)
 _THREAT_RE = re.compile(r"\b(block|freeze|legal|police|case|report|fine|penalty|court)\b", re.I)
 
 

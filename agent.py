@@ -317,7 +317,7 @@ class Agent:
         name = (facts.get("name") or "").strip()
         branch = (facts.get("branch") or "").strip()
 
-        who = name or "bro"
+        who = name or ""
 
         ask = ""
         if verification_asks:
@@ -348,7 +348,7 @@ class Agent:
         pre = ""
         if "free_email" in suspicious and email_dom:
             pre = random.choice([
-                f"bro that's {email_dom}, not bank mail",
+                f"that's {email_dom}, not bank mail",
                 f"{email_dom} mail isn't official",
                 f"gmail type mail isn't official",
             ])
@@ -362,7 +362,7 @@ class Agent:
             pre = random.choice([
                 "that number looks fake",
                 "nah that's not a real branch line",
-                "bro that's not a landline",
+                "that's not a landline",
             ])
         elif "branch_ambiguous" in suspicious:
             if branch and len(branch.split()) == 1:
@@ -395,16 +395,19 @@ class Agent:
             ])
 
         if ("free_email" in suspicious) or ("landline_looks_mobile" in suspicious) or ("landline_fake" in suspicious) or ("branch_ambiguous" in suspicious):
-            return random.choice([
-                f"{pre}. send {ask}",
-                f"ya {who}, but {pre}. send {ask}",
-            ])
+            opts = [f"{pre}. send {ask}"]
+            if who:
+                opts.append(f"ya {who}, but {pre}. send {ask}")
+            else:
+                opts.append(f"ya but {pre}. send {ask}")
+            return random.choice(opts)
 
-        return random.choice([
-            f"{pre}. send {ask}",
-            f"ya {who}, but {pre}. send {ask}",
-            f"ok, still need {ask}",
-        ])
+        opts = [f"{pre}. send {ask}", f"ok, still need {ask}"]
+        if who:
+            opts.append(f"ya {who}, but {pre}. send {ask}")
+        else:
+            opts.append(f"ya but {pre}. send {ask}")
+        return random.choice(opts)
 
     def _maybe_append_followup(self, reply: str, follow: str) -> str:
         r = (reply or "").strip()
@@ -463,7 +466,7 @@ class Agent:
             # length variation for tests/human feel
             if len(reply) < 40 and random.random() < 0.3:
                 # Avoid generic "explain" loops; keep it as light human filler instead.
-                reply = f"{reply} {random.choice(['??', 'bro', 'ya', 'hmm'])}"
+                reply = f"{reply} {random.choice(['??', 'ya', 'hmm', 'ok'])}"
 
         # --- enforce no exact repeats (deterministic, not luck-based) ---
         reply = re.sub(r"\s+", " ", (reply or "").strip())
@@ -473,8 +476,8 @@ class Agent:
             flags = self.s.setdefault("flags", {})
             counter = int(flags.get("outgoing_count", 0))
 
-            prefixes = ["hmm", "ok", "hey", "one sec", "wait", "bro", "ya", "listen", "hold on", "look"]
-            suffixes = ["ok", "hmm", "pls", "ya", "bro", "man", "ok then", "so?", "right", "nah"]
+            prefixes = ["hmm", "ok", "hey", "one sec", "wait", "ya", "listen", "hold on", "look"]
+            suffixes = ["ok", "hmm", "pls", "ya", "ok then", "so?", "right", "nah", "tho"]
             punct = ["", ".", "..", "...", "?", "??", "!"]
 
             # Try a bunch of deterministic variants until we find a unique one.
@@ -517,7 +520,7 @@ class Agent:
             return "nah, just tell me properly"
         if signals.get("typing_accusation"):
             return random.choice([
-                "typing off? bro just say what you want",
+                "typing off? just say what you want",
                 "im typing normal lol. what is it?",
                 "what? im typing fine. what's this about",
             ])
@@ -658,8 +661,11 @@ class Agent:
         if signals.get("legit_statement") or signals.get("transaction_alert"):
             score_now = max(0.0, score_now - 1.0)
         score_now = min(score_now, 5.0)
+        legitish = any([signals.get("legit_statement"), signals.get("transaction_alert")])
         scam_confirmed = bool(self.s.get("flags", {}).get("scam_confirmed")) or (
-            score_now >= 2.5 and not any([signals.get("legit_statement"), signals.get("transaction_alert")])
+            (score_now >= 2.5 and not legitish)
+            # Slightly earlier confirmation for classic "bank + freeze/urgency" pressure, even before OTP/link shows up.
+            or (score_now >= 2.0 and signals.get("authority") and (signals.get("urgency") or signals.get("threat")) and not legitish)
         )
         if scam_confirmed:
             self.s.setdefault("flags", {})["scam_confirmed"] = True
@@ -692,8 +698,17 @@ class Agent:
 
         # Honeypot behavior: when they describe "steps/process", ask for the link/beneficiary early to extract intel.
         incoming_low = incoming.lower()
-        if scam_confirmed and not profile_now.get("url"):
-            if any(w in incoming_low for w in ["click", "link", "steps", "step", "process", "guide", "renew", "update", "verify"]):
+        suspicionish = scam_confirmed or any(
+            [
+                signals.get("authority"),
+                signals.get("urgency"),
+                signals.get("threat"),
+                signals.get("otp"),
+                signals.get("payment"),
+            ]
+        )
+        if suspicionish and not profile_now.get("url"):
+            if any(w in incoming_low for w in ["click", "link", "steps", "step", "process", "guide", "renew", "update", "verify", "app", "form"]):
                 link_ask = "the link you're asking me to open"
                 verification_asks = [link_ask] + [a for a in verification_asks if a != link_ask]
         if scam_confirmed and signals.get("payment") and not profile_now.get("upi"):
@@ -936,7 +951,15 @@ class Agent:
             allow_variation = False
         if signals.get("ask_profile") or signals.get("memory_probe") or signals.get("told_you") or signals.get("clarification_request") or signals.get("typing_accusation"):
             allow_variation = False
-        reply = self._unique_reply(self._guardrails(reply), allow_variation=allow_variation)
+        reply = self._guardrails(reply)
+        # Final identity-loop breaker: the LLM or rewriter can still output "who's this?"
+        # even after we already have context. Never do that mid-thread.
+        if IDENTITY_LOOP_RE.search((reply or "").lower()):
+            facts_now2 = self.s.get("memory_state", {}).get("facts", {}) or {}
+            if facts_now2.get("name") or facts_now2.get("bank") or self.s.get("flags", {}).get("otp_ask_count", 0) > 0:
+                reply = memory_hint or self._verification_status_line(proof_state, verification_asks, scam_confirmed=scam_confirmed)
+                reply = self._guardrails(reply)
+        reply = self._unique_reply(reply, allow_variation=allow_variation)
         self.memory.add_bot_message(reply)
         self.memory.update_summary(incoming, reply)
         if verification_asks:

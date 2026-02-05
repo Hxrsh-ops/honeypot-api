@@ -168,13 +168,22 @@ class MemoryManager:
                 banned = {
                     "otp", "share", "send", "email", "mail", "id", "account", "upi", "renew", "suspend",
                     "suspicious", "activity", "freeze", "blocked", "call", "link", "verify", "help",
+                    # honorifics / fluff that should never become a "branch name"
+                    "sir", "mam", "maam", "madam", "bro", "bhai", "boss", "dude", "pls", "please",
                 }
+                # If we already know their name, don't let "raju sir" become a branch.
+                try:
+                    facts_now = self.mem.get("facts", {}) or {}
+                except Exception:
+                    facts_now = {}
+                known_name = str(facts_now.get("name") or "").strip().lower()
                 if (
                     3 <= len(candidate) <= 24
                     and len(toks) <= 3
                     and re.fullmatch(r"[a-z][a-z\s]{2,23}", candidate) is not None
                     and candidate not in {"ok", "okay", "yes", "no", "ya", "yeah", "yep", "sure", "exit", "bye"}
                     and not any(t in banned for t in toks)
+                    and not (known_name and known_name in toks)
                 ):
                     extracted["branch"] = candidate
 
@@ -189,6 +198,21 @@ class MemoryManager:
             emp = EMP_ID_RE.search(text)
             if emp:
                 extracted["employee_id"] = emp.group(0)
+        # If we just asked for employee id and they reply with a bare number, treat it as employee_id.
+        if not extracted.get("employee_id"):
+            last_bot = ""
+            try:
+                bots = self.mem.get("last_bot_messages", [])
+                last_bot = (bots[-1] if bots else "") or ""
+            except Exception:
+                last_bot = ""
+            lb = last_bot.lower()
+            if re.search(r"\b(employee id|emp id)\b", lb) or ((" id" in lb or lb.strip().endswith("id?")) and re.search(r"\b(send|share|give)\b", lb)):
+                candidate = (text or "").strip()
+                if re.fullmatch(r"[\d\s\-\+\(\)]+", candidate or ""):
+                    m = re.search(r"\b\d{6,}\b", candidate)
+                    if m:
+                        extracted["employee_id"] = m.group(0)
 
         # Branch/office landline (often 8-12 digits). Don't echo it back in replies.
         if LANDLINE_HINT_RE.search(text):
@@ -203,21 +227,9 @@ class MemoryManager:
                 last_bot = (bots[-1] if bots else "") or ""
             except Exception:
                 last_bot = ""
-            if re.search(r"\b(landline|branch line|office line)\b", last_bot.lower()):
+            if LANDLINE_HINT_RE.search(last_bot):
                 candidate = (text or "").strip()
                 # Only digits + separators to avoid capturing unrelated IDs in sentences.
-                if re.fullmatch(r"[\d\s\-\+\(\)]+", candidate or ""):
-                    m = LONG_DIGITS_RE.search(candidate)
-                    if m:
-                        extracted["branch_phone"] = m.group(0)
-        # If bank context exists and they send just a number, treat it as callback/branch line (helps avoid loops).
-        if not extracted.get("branch_phone"):
-            try:
-                facts_now = self.mem.get("facts", {}) or {}
-            except Exception:
-                facts_now = {}
-            if facts_now.get("bank"):
-                candidate = (text or "").strip()
                 if re.fullmatch(r"[\d\s\-\+\(\)]+", candidate or ""):
                     m = LONG_DIGITS_RE.search(candidate)
                     if m:
@@ -522,13 +534,13 @@ class MemoryManager:
             if free_email and email_domain:
                 return random.choice([
                     f"ok {who}, i saw the id/branch stuff but that mail is {email_domain}. not official. send {ask}",
-                    f"bro that's a {email_domain} mail. send {ask}",
+                    f"that's a {email_domain} mail. not official. send {ask}",
                     f"ok but that's not bank mail. send {ask}",
                 ])
             if landline_mobile and "landline" in ask:
                 return random.choice([
                     f"that looks like a mobile number. send {ask}",
-                    f"bro that's not a branch landline. send {ask}",
+                    f"that's not a branch landline. send {ask}",
                     f"nah, need the real branch landline. send {ask}",
                 ])
             if landline_fake and "landline" in ask:

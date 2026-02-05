@@ -2,6 +2,7 @@ import time
 import re
 import random
 from agent import Agent
+from memory_manager import MemoryManager
 
 
 def test_otp_staged_behavior():
@@ -142,3 +143,24 @@ def test_clarification_loop_breaker_after_scam_pressure():
     out = a.respond("what do you want me to explain?")
     r = (out.get("reply") or "").lower()
     assert any(k in r for k in ["branch", "official", "email", "employee", "call"])
+
+
+def test_branch_extraction_ignores_honorifics():
+    s = {}
+    mem = MemoryManager(s)
+    mem.merge_extractions({"name": "raju", "bank": "canara"}, source="test")
+    mem.mem["last_bot_messages"] = ["which branch? send branch name"]
+
+    ex1 = mem.extract_from_text("raju sir")
+    assert "branch" not in ex1
+
+    ex2 = mem.extract_from_text("chennai")
+    assert ex2.get("branch") == "chennai"
+
+
+def test_employee_id_extraction_from_digits_only_after_ask():
+    s = {}
+    mem = MemoryManager(s)
+    mem.mem["last_bot_messages"] = ["send employee id"]
+    ex = mem.extract_from_text("55568994")
+    assert ex.get("employee_id") == "55568994"
