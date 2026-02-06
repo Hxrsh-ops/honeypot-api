@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
 import uuid
 import time
 import random
@@ -23,7 +24,7 @@ from typing import Any, Dict, List
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from agent_utils import safe_parse_body, redact_sensitive
+from agent_utils import safe_parse_body, redact_sensitive, URL_RE
 from llm_adapter import groq_chat
 
 
@@ -60,6 +61,58 @@ sessions = SESSIONS  # compat export for old tests/tools
 
 EXIT_RE = re.compile(r"\b(exit|quit|bye|goodbye|stop)\b", re.I)
 
+# ------------------------------------------------------------
+# SIGNALS / INTEL EXTRACTION (lightweight)
+# ------------------------------------------------------------
+OTP_RE = re.compile(r"\b(otp|one[-\s]?time\s?password|verification\s?code)\b", re.I)
+PAYMENT_RE = re.compile(r"\b(upi|transfer|pay|payment|refund|fee)\b", re.I)
+URGENCY_RE = re.compile(
+    r"\b(urgent|immediate|within|expire|freez(?:e|ing|ed)?|blocked|suspend(?:ed|ing)?|disable(?:d)?|deactivat(?:e|ed)?)\b",
+    re.I,
+)
+AUTHORITY_RE = re.compile(r"\b(bank|fraud|security|official|manager|head office)\b", re.I)
+ACCOUNT_REQ_RE = re.compile(r"\b(account\s*(?:number|no\.?)|a/c|acc\s*no\.?)\b", re.I)
+
+EMAIL_RE = re.compile(r"\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", re.I)
+PHONE_CAND_RE = re.compile(r"\b\+?\d[\d\s\-\(\)]{7,}\b")
+CASE_TICKET_RE = re.compile(r"\b(ticket|case|ref|reference)\b\s*(?:id|no\.?|number|#)?\s*[:\-]?\s*([a-z0-9\-]{4,})", re.I)
+EMP_ID_RE = re.compile(r"\b(?:employee\s*id|emp\s*id|staff\s*id|agent\s*id)\b\s*[:#\-]?\s*([a-z0-9\-]{4,})", re.I)
+FROM_BANK_RE = re.compile(r"\bfrom\s+([a-z][a-z\s]{1,40}?)\s+bank\b", re.I)
+FROM_ORG_RE = re.compile(r"\bfrom\s+([a-z][a-z\s]{1,50})\b", re.I)
+BRANCH_RE = re.compile(r"\bbranch(?:\s+name)?\s*(?:is|:|-|at|in)\s*([a-z][a-z\s]{1,30})\b", re.I)
+BRANCH_SUFFIX_RE = re.compile(r"\b([a-z][a-z\s]{1,30})\s+branch\b", re.I)
+NAME_ROLE_RE = re.compile(r"\b(?:i am|i'm|im|this is)\s+([a-z][a-z\s]{1,40})\b", re.I)
+
+# Meta leak detector (avoid false positives like "kapil" containing "api").
+META_RE = re.compile(
+    r"(?i)("
+    r"as an ai|as a language model|language model|system prompt|developer message|"
+    r"\bopenai\b|\bgroq\b|\bapi\b|\bmodel\b|\btemperature\b|\btokens?\b|max_tokens"
+    r")"
+)
+
+TARGET_ORDER = [
+    "bank_org",
+    "name_role",
+    "employee_id",
+    "case_ticket",
+    "callback_number",
+    "official_email",
+    "official_website",
+    "branch_location",
+]
+
+TARGET_HINTS: Dict[str, str] = {
+    "bank_org": "which bank/company youre with (exact name)",
+    "name_role": "your name and role/title",
+    "employee_id": "your employee id",
+    "case_ticket": "a case/ticket/reference number",
+    "callback_number": "a number i can call you back on",
+    "official_email": "an official email address (not gmail)",
+    "official_website": "the official website/app name (not a random link)",
+    "branch_location": "your branch and city",
+}
+
 
 def _pick_persona_state() -> str:
     return random.choice(["at_work", "at_home", "on_break"])
@@ -75,6 +128,9 @@ def get_session(session_id: str) -> Dict[str, Any]:
             "persona_state": _pick_persona_state(),
             "history": [],  # list[{role, content}]
             "turn_count": 0,
+            "intel": {},
+            "last_signals": {},
+            "last_ask_key": "",
         }
     return SESSIONS[session_id]
 
@@ -82,8 +138,194 @@ def get_session(session_id: str) -> Dict[str, Any]:
 def cleanup_session(session_id: str):
     SESSIONS.pop(session_id, None)
 
+def detect_signals(text: str) -> Dict[str, bool]:
+    t = (text or "")
+    low = t.lower()
+    return {
+        "otp": bool(OTP_RE.search(t)),
+        "payment": bool(PAYMENT_RE.search(t)),
+        "link": bool(URL_RE.search(t)),
+        "urgency": bool(URGENCY_RE.search(t)),
+        "authority": bool(AUTHORITY_RE.search(t)),
+        "account_request": bool(ACCOUNT_REQ_RE.search(t)),
+    }
 
-def _system_prompt(persona_state: str) -> str:
+
+def _digits_count(s: str) -> int:
+    return sum(1 for c in (s or "") if c.isdigit())
+
+
+def _store_intel(session: Dict[str, Any], key: str, value: str):
+    if not value:
+        return
+    intel = session.setdefault("intel", {}) or {}
+    session["intel"] = intel
+    intel[key] = {"value": value, "ts": time.time()}
+
+
+def _store_intel_flag(session: Dict[str, Any], key: str):
+    intel = session.setdefault("intel", {}) or {}
+    session["intel"] = intel
+    intel[key] = {"value": True, "ts": time.time()}
+
+
+def _has_intel(intel: Dict[str, Any], key: str) -> bool:
+    v = (intel or {}).get(key)
+    if not v:
+        return False
+    if isinstance(v, dict):
+        if v.get("value"):
+            return True
+        vals = v.get("values")
+        return bool(vals)
+    return True
+
+
+def extract_intel(text: str, session: Dict[str, Any]):
+    """
+    Best-effort extraction of scammer details from incoming text.
+    This is only used to steer prompts / avoid repeat asks.
+    """
+    if not text:
+        return
+
+    # Website / domain
+    url_m = URL_RE.search(text)
+    if url_m:
+        raw_url = url_m.group(0)
+        try:
+            parsed = urllib.parse.urlparse(raw_url)
+            host = (parsed.hostname or "").strip().lower()
+            if host:
+                _store_intel(session, "official_website", host)
+            else:
+                _store_intel_flag(session, "official_website")
+        except Exception:
+            _store_intel_flag(session, "official_website")
+
+    # Official email
+    email_m = EMAIL_RE.search(text)
+    if email_m:
+        _store_intel(session, "official_email", email_m.group(0).lower())
+
+    # Case / ticket / reference
+    case_m = CASE_TICKET_RE.search(text)
+    if case_m:
+        _store_intel(session, "case_ticket", case_m.group(2))
+
+    # Employee id
+    emp_m = EMP_ID_RE.search(text)
+    if emp_m:
+        _store_intel(session, "employee_id", emp_m.group(1))
+
+    # Callback number (avoid short OTP-like numbers)
+    # Prefer numbers that look like phone/helpline length.
+    best_phone = ""
+    for m in PHONE_CAND_RE.finditer(text):
+        cand = m.group(0)
+        d = _digits_count(cand)
+        if 8 <= d <= 15:
+            best_phone = cand
+            break
+    if best_phone:
+        _store_intel(session, "callback_number", best_phone)
+
+    # Bank / org
+    bank_m = FROM_BANK_RE.search(text)
+    if bank_m:
+        org = bank_m.group(1).strip().lower()
+        _store_intel(session, "bank_org", org + " bank")
+    else:
+        # If they say "from <org>" without "bank", keep as org hint (lightly).
+        org_m = FROM_ORG_RE.search(text)
+        if org_m and "bank" in (text or "").lower():
+            org = org_m.group(1).strip().lower()
+            if 2 <= len(org) <= 50:
+                _store_intel(session, "bank_org", org)
+
+    # Branch / location
+    br = BRANCH_RE.search(text) or BRANCH_SUFFIX_RE.search(text)
+    if br:
+        loc = br.group(1).strip().lower()
+        _store_intel(session, "branch_location", loc)
+
+    # Name / role (rough)
+    nr = NAME_ROLE_RE.search(text)
+    if nr:
+        val = nr.group(1).strip()
+        # keep short and non-weird
+        if 2 <= len(val) <= 40:
+            _store_intel(session, "name_role", val)
+
+
+def choose_verbosity(session: Dict[str, Any], signals: Dict[str, bool]) -> Dict[str, Any]:
+    turn_n = int(session.get("turn_count", 0) or 0)
+    pressure = any(
+        [
+            bool(signals.get("otp")),
+            bool(signals.get("payment")),
+            bool(signals.get("link")),
+            bool(signals.get("urgency")),
+            bool(signals.get("authority")),
+        ]
+    )
+    is_long = (turn_n % 4 == 2) or (pressure and (turn_n % 5 == 3))
+    if is_long:
+        return {
+            "mode": "long",
+            "max_lines": 4,
+            "max_chars": 520,
+            "max_tokens": 220,
+            "length_hint": "this time be a bit longer and rambly (3-6 short sentences, 2-4 lines max)",
+        }
+    return {
+        "mode": "short",
+        "max_lines": 2,
+        "max_chars": 260,
+        "max_tokens": 120,
+        "length_hint": "keep it short (1-2 short sentences, max 2 short lines)",
+    }
+
+
+def choose_next_target(session: Dict[str, Any], signals: Dict[str, bool]) -> str:
+    intel = session.get("intel", {}) or {}
+    missing = [k for k in TARGET_ORDER if not _has_intel(intel, k)]
+    if not missing:
+        return ""
+
+    # Default: first missing in rotation.
+    target = missing[0]
+
+    # Overrides
+    if bool(signals.get("link")) and (not _has_intel(intel, "official_website")):
+        target = "official_website"
+    if bool(signals.get("otp")) or bool(signals.get("payment")):
+        for k in ["case_ticket", "callback_number", "employee_id"]:
+            if not _has_intel(intel, k):
+                target = k
+                break
+    if bool(signals.get("authority")) and (not _has_intel(intel, "employee_id")):
+        target = "employee_id"
+
+    if target not in missing:
+        target = missing[0]
+
+    last = str(session.get("last_ask_key") or "")
+    if target == last and len(missing) > 1:
+        idx = missing.index(target) if target in missing else 0
+        target = missing[(idx + 1) % len(missing)]
+
+    session["last_ask_key"] = target
+    return target
+
+
+def _system_prompt(
+    persona_state: str,
+    *,
+    length_hint: str,
+    target_hint: str,
+    pressure: bool,
+) -> str:
     place = ""
     if persona_state == "at_work":
         place = "you are at work right now."
@@ -92,23 +334,28 @@ def _system_prompt(persona_state: str) -> str:
     else:
         place = "you are at home right now."
 
-    return (
-        "you are a real human texting on whatsapp/sms. "
-        "you just got an unexpected message from an unknown person and you are not sure if its legit. "
-        f"{place} "
-        "you are cautious and a bit confused, sometimes slightly emotional. "
-        "you never accuse the sender directly. "
-        "you never share personal or sensitive info (otp, pin, passwords, bank details, account number, upi, address). "
-        "you do not sound like customer support, a chatbot, an investigator, or security. "
-        "you do not explain your reasoning. "
-        "you do not use lists, bullet points, or numbered steps. "
-        "write like normal texting: mostly lowercase, short, a little messy. "
-        "reply in 1-2 short sentences (max 2 short lines). "
-        "ask at most one question. "
-        "do not repeat your last message. "
-        "if they push for otp/upi/link or say urgent/freeze/block, stall a bit like youre checking, and ask for a simple verification detail casually. "
-        "return only the message text. no quotes. no json. no markdown."
-    )
+    parts = [
+        "you are a real human texting on whatsapp/sms. ",
+        "you just got an unexpected message and you are not sure if its legit. ",
+        f"{place} ",
+        "you are worried and a bit confused, but you want to fix it. you sound like a normal person, not support. ",
+        "you never accuse them directly, but you can say it feels weird or youre not sure. ",
+        "you never share personal/sensitive info (otp, pin, passwords, account number, upi, address). ",
+        "you also never ask them for your otp/account/upi. ",
+        "you do not sound like an investigator or security. you do not explain your reasoning. ",
+        "you do not use lists, bullet points, or numbered steps. ",
+        "write like normal texting: mostly lowercase, short, a little messy. ",
+        f"{length_hint}. ",
+        "ask at most one question. ",
+        "do not repeat your last message. ",
+        "do not paste back any full links or long numbers they sent. ",
+    ]
+    if pressure:
+        parts.append("if they are pushing otp/upi/link/urgent stuff, stall like youre checking and sound a bit scared. ")
+    if target_hint:
+        parts.append(f"try to naturally ask them for {target_hint}. ")
+    parts.append("return only the message text. no quotes. no json. no markdown.")
+    return "".join(parts)
 
 
 def _delay_reply(session: Dict[str, Any]) -> str:
@@ -133,25 +380,13 @@ def _fallback_reply(session: Dict[str, Any]) -> str:
 
 
 def _looks_like_meta(text: str) -> bool:
-    t = (text or "").lower()
-    if not t:
+    t = (text or "")
+    if not t.strip():
         return True
-    bad = [
-        "as an ai",
-        "as a language model",
-        "system prompt",
-        "developer message",
-        "openai",
-        "groq",
-        "api",
-        "model",
-        "temperature",
-        "tokens",
-    ]
-    return any(b in t for b in bad)
+    return bool(META_RE.search(t))
 
 
-def _postprocess_reply(text: str, session: Dict[str, Any]) -> str:
+def _postprocess_reply(text: str, session: Dict[str, Any], *, max_lines: int, max_chars: int) -> str:
     out = (text or "").strip()
     if not out:
         return _fallback_reply(session)
@@ -159,11 +394,11 @@ def _postprocess_reply(text: str, session: Dict[str, Any]) -> str:
     # Normalize whitespace; keep at most 2 short lines.
     out = re.sub(r"[ \t]+", " ", out)
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-    out = "\n".join(lines[:2]).strip()
+    out = "\n".join(lines[: max(1, int(max_lines))]).strip()
 
     # Avoid long rambles (demo-safe).
-    if len(out) > 260:
-        out = out[:260].rstrip()
+    if len(out) > int(max_chars):
+        out = out[: int(max_chars)].rstrip()
 
     if _looks_like_meta(out):
         return _fallback_reply(session)
@@ -254,15 +489,33 @@ async def honeypot(request: Request):
         if invalid_key:
             logger.warning("Invalid API key (soft-allowed); continuing request")
 
+        # Signals/intel are guidance only (no templates).
+        signals = detect_signals(incoming)
+        session["last_signals"] = dict(signals)
+        extract_intel(incoming, session)
+
         # Rate-limit safety: minimum delay per session between LLM calls.
         now = time.time()
         last_llm_ts = float(session.get("last_llm_ts", 0.0) or 0.0)
         if bool(session.get("in_flight")) or (now - last_llm_ts < MIN_LLM_DELAY_SEC):
             reply = _delay_reply(session)
-            reply = _postprocess_reply(reply, session)
+            reply = _postprocess_reply(reply, session, max_lines=2, max_chars=260)
             _append_history(session, "assistant", reply)
             session["turn_count"] = int(session.get("turn_count", 0) or 0) + 1
             return JSONResponse({"reply": reply, "session_id": session_id})
+
+        verbosity = choose_verbosity(session, signals)
+        target_key = choose_next_target(session, signals)
+        target_hint = TARGET_HINTS.get(target_key, "")
+        pressure = any(
+            [
+                bool(signals.get("otp")),
+                bool(signals.get("payment")),
+                bool(signals.get("link")),
+                bool(signals.get("urgency")),
+                bool(signals.get("authority")),
+            ]
+        )
 
         # Reserve the slot before any await to prevent parallel Groq calls.
         session["in_flight"] = True
@@ -270,7 +523,12 @@ async def honeypot(request: Request):
 
         try:
             persona_state = str(session.get("persona_state") or "at_home")
-            prompt = _system_prompt(persona_state)
+            prompt = _system_prompt(
+                persona_state,
+                length_hint=str(verbosity.get("length_hint") or ""),
+                target_hint=target_hint,
+                pressure=pressure,
+            )
             history = session.get("history", []) or []
 
             raw_reply = await asyncio.to_thread(
@@ -278,14 +536,19 @@ async def honeypot(request: Request):
                 history,
                 prompt,
                 temperature=0.7,
-                max_tokens=120,
+                max_tokens=int(verbosity.get("max_tokens") or 120),
             )
         except Exception:
             raw_reply = _fallback_reply(session)
         finally:
             session["in_flight"] = False
 
-        reply = _postprocess_reply(str(raw_reply), session)
+        reply = _postprocess_reply(
+            str(raw_reply),
+            session,
+            max_lines=int(verbosity.get("max_lines") or 2),
+            max_chars=int(verbosity.get("max_chars") or 260),
+        )
         _append_history(session, "assistant", reply)
         session["turn_count"] = int(session.get("turn_count", 0) or 0) + 1
 
@@ -328,12 +591,16 @@ async def session_summary(session_id: str):
     # Minimal summary: last few turns + timestamps.
     hist = sess.get("history", []) or []
     preview = hist[-10:]
+    intel = sess.get("intel", {}) or {}
     summary = {
         "created": sess.get("created"),
         "last_seen": sess.get("last_seen"),
         "turn_count": sess.get("turn_count", 0),
         "persona_state": sess.get("persona_state"),
         "turns_preview": preview,
+        "intel": intel,
+        "last_signals": sess.get("last_signals", {}) or {},
+        "last_ask_key": sess.get("last_ask_key", ""),
     }
     return JSONResponse({"summary": summary})
 
