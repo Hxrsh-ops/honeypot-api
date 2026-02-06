@@ -103,7 +103,7 @@ def _system_prompt(persona_state: str) -> str:
         "you do not explain your reasoning. "
         "you do not use lists, bullet points, or numbered steps. "
         "write like normal texting: mostly lowercase, short, a little messy. "
-        "reply in 1–2 short sentences (max 2 short lines). "
+        "reply in 1-2 short sentences (max 2 short lines). "
         "ask at most one question. "
         "do not repeat your last message. "
         "if they push for otp/upi/link or say urgent/freeze/block, stall a bit like youre checking, and ask for a simple verification detail casually. "
@@ -115,9 +115,9 @@ def _delay_reply(session: Dict[str, Any]) -> str:
     # Small rotating set to avoid exact repeats without becoming template-y.
     n = int(session.get("turn_count", 0) or 0)
     options = [
-        "sorry, give me a moment… im checking something",
-        "wait, one sec… im looking",
-        "hold on… let me check",
+        "sorry, give me a moment... im checking something",
+        "wait, one sec... im looking",
+        "hold on... let me check",
     ]
     return options[n % len(options)]
 
@@ -125,9 +125,9 @@ def _delay_reply(session: Dict[str, Any]) -> str:
 def _fallback_reply(session: Dict[str, Any]) -> str:
     n = int(session.get("turn_count", 0) or 0)
     options = [
-        "hmm… i need to check this properly. can you wait a bit?",
-        "uhh give me a bit… i need to look at this",
-        "one sec… i need to check something first",
+        "hmm... i need to check this properly. can you wait a bit?",
+        "uhh give me a bit... i need to look at this",
+        "one sec... i need to check something first",
     ]
     return options[n % len(options)]
 
@@ -240,7 +240,7 @@ async def honeypot(request: Request):
         if int(session.get("turn_count", 0) or 0) >= MAX_TURNS:
             cleanup_session(session_id)
             return JSONResponse(
-                {"reply": "ok i’ll check this properly and get back later", "session_id": session_id, "ended": True}
+                {"reply": "ok i'll check this properly and get back later", "session_id": session_id, "ended": True}
             )
 
         if EXIT_RE.search(incoming):
@@ -295,7 +295,7 @@ async def honeypot(request: Request):
         logger.exception("Honeypot error")
         # Absolute failsafe: never crash, never expose errors.
         session_id = str(uuid.uuid4())
-        return JSONResponse({"reply": "hmm… can you give me a minute? i need to check something", "session_id": session_id})
+        return JSONResponse({"reply": "hmm... can you give me a minute? i need to check something", "session_id": session_id})
 
 
 @app.get("/sessions/{session_id}")
@@ -347,4 +347,3 @@ if __name__ == "__main__":
         port=int(os.getenv("PORT", "8000")),
         log_level="info",
     )
-
