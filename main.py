@@ -113,6 +113,17 @@ TARGET_HINTS: Dict[str, str] = {
     "branch_location": "your branch and city",
 }
 
+TARGET_EXAMPLES: Dict[str, str] = {
+    "bank_org": "which bank/company is this from exactly?",
+    "name_role": "what's your full name and role?",
+    "employee_id": "what's your employee id?",
+    "case_ticket": "do you have a case or reference number?",
+    "callback_number": "what number can i call you back on?",
+    "official_email": "can you message me from your official email?",
+    "official_website": "what's the official website/app name? i'll check from my side",
+    "branch_location": "which branch/city are you from?",
+}
+
 
 def _pick_persona_state() -> str:
     return random.choice(["at_work", "at_home", "on_break"])
@@ -275,8 +286,8 @@ def choose_verbosity(session: Dict[str, Any], signals: Dict[str, bool]) -> Dict[
             "mode": "long",
             "max_lines": 4,
             "max_chars": 520,
-            "max_tokens": 220,
-            "length_hint": "this time be a bit longer and rambly (3-6 short sentences, 2-4 lines max)",
+            "max_tokens": 260,
+            "length_hint": "write 3-6 short sentences, a bit rambly, 2-4 lines max. dont reply in just one short sentence",
         }
     return {
         "mode": "short",
@@ -324,6 +335,7 @@ def _system_prompt(
     *,
     length_hint: str,
     target_hint: str,
+    target_example: str,
     pressure: bool,
 ) -> str:
     place = ""
@@ -339,6 +351,7 @@ def _system_prompt(
         "you just got an unexpected message and you are not sure if its legit. ",
         f"{place} ",
         "you are worried and a bit confused, but you want to fix it. you sound like a normal person, not support. ",
+        "you might say youre checking/trying, like you could do it, but youre hesitant. ",
         "you never accuse them directly, but you can say it feels weird or youre not sure. ",
         "you never share personal/sensitive info (otp, pin, passwords, account number, upi, address). ",
         "you also never ask them for your otp/account/upi. ",
@@ -353,7 +366,9 @@ def _system_prompt(
     if pressure:
         parts.append("if they are pushing otp/upi/link/urgent stuff, stall like youre checking and sound a bit scared. ")
     if target_hint:
-        parts.append(f"try to naturally ask them for {target_hint}. ")
+        parts.append(f"your one question should be about {target_hint}. avoid vague questions like 'what is this about'. ")
+        if target_example:
+            parts.append(f"example: {target_example}. ")
     parts.append("return only the message text. no quotes. no json. no markdown.")
     return "".join(parts)
 
@@ -507,6 +522,7 @@ async def honeypot(request: Request):
         verbosity = choose_verbosity(session, signals)
         target_key = choose_next_target(session, signals)
         target_hint = TARGET_HINTS.get(target_key, "")
+        target_example = TARGET_EXAMPLES.get(target_key, "")
         pressure = any(
             [
                 bool(signals.get("otp")),
@@ -527,6 +543,7 @@ async def honeypot(request: Request):
                 persona_state,
                 length_hint=str(verbosity.get("length_hint") or ""),
                 target_hint=target_hint,
+                target_example=target_example,
                 pressure=pressure,
             )
             history = session.get("history", []) or []
