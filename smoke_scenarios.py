@@ -56,8 +56,8 @@ def run_scenario(
             reply = f"[no reply] {data}"
         reply_s = str(reply)
 
-        # Minimal response contract: only reply + session_id (+ ended optional).
-        allowed = {"reply", "session_id", "ended"}
+        # Minimal response contract: only reply + session_id.
+        allowed = {"reply", "session_id"}
         if isinstance(data, dict):
             if any(k not in allowed for k in data.keys()):
                 extra_keys += 1

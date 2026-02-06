@@ -96,3 +96,30 @@ def test_debug_endpoints_disabled_by_default(monkeypatch):
     r2 = client.get("/sessions/whatever/summary")
     assert r2.status_code == 404
 
+
+def test_bye_or_exit_does_not_end_or_cleanup_session(monkeypatch):
+    _clear_sessions()
+
+    monkeypatch.setattr(main, "MIN_LLM_DELAY_SEC", 0.0)
+
+    calls = {"n": 0}
+
+    def _fake_groq(messages, system_prompt, **_):
+        calls["n"] += 1
+        return "ok"
+
+    monkeypatch.setattr(main, "groq_chat", _fake_groq)
+
+    sid = "t-bye"
+    r1 = client.post("/honeypot", json={"message": "bye", "session_id": sid})
+    assert r1.status_code == 200
+    assert set(r1.json().keys()) == {"reply", "session_id"}
+    assert r1.json().get("session_id") == sid
+    assert sid in main.SESSIONS
+
+    r2 = client.post("/honeypot", json={"message": "still there?", "session_id": sid})
+    assert r2.status_code == 200
+    assert set(r2.json().keys()) == {"reply", "session_id"}
+    assert r2.json().get("session_id") == sid
+    assert sid in main.SESSIONS
+    assert calls["n"] == 2

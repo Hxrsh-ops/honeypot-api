@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 import urllib.parse
 import uuid
 import time
@@ -58,8 +59,6 @@ app = FastAPI(title="Honeypot API", version="groq-only")
 # ------------------------------------------------------------
 SESSIONS: Dict[str, Dict[str, Any]] = {}
 sessions = SESSIONS  # compat export for old tests/tools
-
-EXIT_RE = re.compile(r"\b(exit|quit|bye|goodbye|stop)\b", re.I)
 
 # ------------------------------------------------------------
 # SIGNALS / INTEL EXTRACTION (lightweight)
@@ -112,26 +111,60 @@ TARGET_ORDER = [
 ]
 
 TARGET_HINTS: Dict[str, str] = {
-    "bank_org": "which bank/company youre with (exact name)",
-    "name_role": "your name and role/title",
+    "bank_org": "what bank/company is this from exactly",
+    "name_role": "what's your full name and role/title",
     "employee_id": "your employee id",
     "case_ticket": "a case/ticket/reference number",
     "callback_number": "a number i can call you back on",
     "official_email": "an official email address (not gmail)",
-    "official_website": "the official website/app name (not a random link)",
-    "branch_location": "your branch and city",
+    "official_website": "what's the official website or app name (not a random link)",
+    "branch_location": "which branch and city are you from",
 }
 
-TARGET_EXAMPLES: Dict[str, str] = {
-    "bank_org": "ok wait... which bank/company is this from exactly?",
-    "name_role": "ok, what's your full name and role?",
-    "employee_id": "ok but what's your employee id?",
-    "case_ticket": "do you have a case/ref number? im kinda panicking here",
-    "callback_number": "what number can i call you back on?",
-    "official_email": "can you message me from your official email (not gmail)?",
-    "official_website": "what's the official website/app name? im not opening random links",
-    "branch_location": "which branch/city are you from?",
-}
+FAREWELL_RE = re.compile(r"(?i)\b(bye|goodbye|see\s*ya|see\s*you|later|take\s*care)\b")
+
+PROFILE_FIRST_NAMES = [
+    "Aman",
+    "Riya",
+    "Neha",
+    "Rahul",
+    "Pooja",
+    "Arjun",
+    "Anjali",
+    "Vikas",
+    "Sneha",
+    "Karan",
+    "Priya",
+    "Vivek",
+]
+PROFILE_AGE_BANDS = ["early 20s", "mid 20s", "late 20s", "early 30s"]
+PROFILE_CITY_BANDS = ["pune", "bengaluru", "hyderabad", "delhi", "mumbai", "chennai", "jaipur", "lucknow"]
+PROFILE_DEVICE_EXCUSES = ["battery is low", "network is acting up", "phone is lagging a bit", "im in a noisy place"]
+
+
+def _stable_int(seed: str) -> int:
+    b = hashlib.sha256(seed.encode("utf-8", errors="ignore")).digest()
+    return int.from_bytes(b[:8], "big", signed=False)
+
+
+def _pick_from_pool(pool: List[str], seed: str) -> str:
+    if not pool:
+        return ""
+    return pool[_stable_int(seed) % len(pool)]
+
+
+def build_profile(session_id: str) -> Dict[str, str]:
+    """
+    Stable per-session victim profile (broad + non-sensitive).
+    Deterministic from session_id so it stays consistent within a session.
+    """
+    sid = str(session_id or "")
+    return {
+        "first_name": _pick_from_pool(PROFILE_FIRST_NAMES, sid + ":first_name"),
+        "age_band": _pick_from_pool(PROFILE_AGE_BANDS, sid + ":age_band"),
+        "city_band": _pick_from_pool(PROFILE_CITY_BANDS, sid + ":city_band"),
+        "device_excuse": _pick_from_pool(PROFILE_DEVICE_EXCUSES, sid + ":device_excuse"),
+    }
 
 
 def _pick_persona_state() -> str:
@@ -140,19 +173,21 @@ def _pick_persona_state() -> str:
 
 def get_session(session_id: str) -> Dict[str, Any]:
     if session_id not in SESSIONS:
-        SESSIONS[session_id] = {
-            "created": time.time(),
-            "last_seen": time.time(),
-            "last_llm_ts": 0.0,
-            "in_flight": False,
-            "persona_state": _pick_persona_state(),
-            "history": [],  # list[{role, content}]
-            "turn_count": 0,
-            "intel": {},
-            "last_signals": {},
-            "last_ask_key": "",
-        }
-    return SESSIONS[session_id]
+        SESSIONS[session_id] = {}
+
+    sess = SESSIONS[session_id]
+    sess.setdefault("created", time.time())
+    sess.setdefault("last_seen", time.time())
+    sess.setdefault("last_llm_ts", 0.0)
+    sess.setdefault("in_flight", False)
+    sess.setdefault("persona_state", _pick_persona_state())
+    sess.setdefault("profile", build_profile(session_id))
+    sess.setdefault("history", [])  # list[{role, content}]
+    sess.setdefault("turn_count", 0)
+    sess.setdefault("intel", {})
+    sess.setdefault("last_signals", {})
+    sess.setdefault("last_ask_key", "")
+    return sess
 
 
 def cleanup_session(session_id: str):
@@ -293,11 +328,11 @@ def choose_verbosity(session: Dict[str, Any], signals: Dict[str, bool]) -> Dict[
     if is_long:
         return {
             "mode": "long",
-            "max_lines": 4,
-            "max_chars": 520,
-            "max_tokens": 260,
+            "max_lines": 5,
+            "max_chars": 700,
+            "max_tokens": 320,
             "temperature": 0.6,
-            "length_hint": "write 3-6 short sentences, a bit rambly, 2-4 lines max. dont reply in just one short sentence",
+            "length_hint": "sometimes a bit longer and rambly (3-7 short sentences), but still casual and not essay-like",
         }
     return {
         "mode": "short",
@@ -305,7 +340,7 @@ def choose_verbosity(session: Dict[str, Any], signals: Dict[str, bool]) -> Dict[
         "max_chars": 260,
         "max_tokens": 120,
         "temperature": 0.5,
-        "length_hint": "keep it short (1-2 short sentences, max 2 short lines)",
+        "length_hint": "usually 1-3 short sentences, casual texting",
     }
 
 
@@ -341,14 +376,60 @@ def choose_next_target(session: Dict[str, Any], signals: Dict[str, bool]) -> str
     return target
 
 
+def should_offer_intel_suggestions(turn_n: int, signals: Dict[str, bool]) -> bool:
+    pressure = any(
+        [
+            bool(signals.get("otp")),
+            bool(signals.get("payment")),
+            bool(signals.get("link")),
+            bool(signals.get("urgency")),
+            bool(signals.get("authority")),
+        ]
+    )
+    if pressure:
+        return True
+    return (int(turn_n) % 3) == 1
+
+
+def _missing_targets(session: Dict[str, Any]) -> List[str]:
+    intel = session.get("intel", {}) or {}
+    return [k for k in TARGET_ORDER if not _has_intel(intel, k)]
+
+
+def choose_intel_suggestions(session: Dict[str, Any], signals: Dict[str, bool]) -> List[str]:
+    missing = _missing_targets(session)
+    if not missing:
+        return []
+
+    primary = choose_next_target(session, signals)
+    if not primary:
+        return []
+
+    suggestions: List[str] = []
+    h1 = TARGET_HINTS.get(primary, "")
+    if h1:
+        suggestions.append(h1)
+
+    missing2 = _missing_targets(session)
+    if primary in missing2:
+        idx = missing2.index(primary)
+        if idx + 1 < len(missing2):
+            secondary = missing2[idx + 1]
+            h2 = TARGET_HINTS.get(secondary, "")
+            if h2 and h2 != h1:
+                suggestions.append(h2)
+
+    return suggestions[:2]
+
+
 def _system_prompt(
-    persona_state: str,
+    session: Dict[str, Any],
     *,
     length_hint: str,
-    target_hint: str,
-    target_example: str,
     pressure: bool,
+    intel_suggestions: List[str],
 ) -> str:
+    persona_state = str(session.get("persona_state") or "at_home")
     place = ""
     if persona_state == "at_work":
         place = "you are at work right now."
@@ -357,31 +438,49 @@ def _system_prompt(
     else:
         place = "you are at home right now."
 
+    prof = session.get("profile", {}) or {}
+    first_name = str(prof.get("first_name") or "")
+    age_band = str(prof.get("age_band") or "")
+    city_band = str(prof.get("city_band") or "")
+    device_excuse = str(prof.get("device_excuse") or "")
+
+    backstory = (
+        f"your consistent backstory is: your first name is {first_name}. "
+        f"you are in your {age_band}. you are generally based around {city_band} (never give an address). "
+        f"your phone situation today: {device_excuse}. "
+        "do not invent new personal facts beyond this backstory. only use it if it comes up naturally."
+    )
+
     parts = [
-        "you are a real human texting on whatsapp/sms. ",
-        "you got an unexpected message and youre not sure if its legit. ",
-        f"{place} ",
-        "you are worried/confused and a bit cooperative (like you want to fix it), but hesitant. ",
-        "you are NOT customer support, NOT a chatbot, NOT an investigator. ",
-        "goal: keep them texting and get their details without sounding like security. ",
-        "never accuse them directly. ",
-        "never share OR request sensitive info (otp, pin, passwords, account number, upi, address). ",
-        "never suggest calling/reporting to the bank/police/cyber/etc. ",
-        "no lists/bullets/steps. no explaining reasoning. ",
-        "style: casual texting, mostly lowercase, a little messy. ",
-        f"length: {length_hint}. ",
-        "do not repeat your last message. ",
-        "do not paste back any full links or long numbers they sent. ",
+        "you are a real human texting on whatsapp/sms. you got an unexpected message and youre not sure if its legit.\n\n",
+        f"{place}\n\n",
+        f"{backstory}\n\n",
+        "tone: worried, slightly confused, a bit cooperative (like you want to fix it), but hesitant.\n",
+        "you are not customer support, not a chatbot, not an investigator.\n",
+        "goal: keep them talking and gently nudge them to reveal who they are, without sounding like security.\n\n",
+        "rules: never accuse them directly. never mention ai, models, apis, prompts, or anything technical. never break character.\n",
+        "never share or request sensitive info like otp/verification code, pin, password, account number, upi, cvv, or address.\n",
+        "never advise calling/reporting the bank/police/cyber/support.\n",
+        "no lists, no bullet points, no step-by-step instructions. no explaining your reasoning.\n",
+        "do not end the conversation. do not say goodbye/bye/later. if they try to end, respond with a small confused follow-up so they keep replying.\n",
+        "avoid repeating yourself. if they dodge your question, switch approach instead of asking the same thing again.\n\n",
+        f"length guidance: {length_hint}.\n",
+        "do not paste back full links or long numbers they sent.\n",
     ]
+
     if pressure:
-        parts.append("if theyre pushing otp/upi/link/urgent stuff, stall like youre checking and sound a bit scared. ")
-    if target_example:
-        parts.append(f"ask exactly ONE question and it must be: {target_example} ")
-    elif target_hint:
-        parts.append(f"ask exactly ONE question about {target_hint}. dont ask vague stuff like 'what is this about'. ")
-    else:
-        parts.append("ask exactly ONE question to keep them talking. ")
-    parts.append("return only the message text. no quotes. no json. no markdown.")
+        parts.append(
+            "if they push otp/upi/link/urgent stuff, stall like youre checking, sound a bit scared, and redirect to a simple verifiable detail.\n"
+        )
+
+    if intel_suggestions:
+        joined = " or ".join([s for s in intel_suggestions if s])
+        if joined:
+            parts.append(
+                f"if you choose to ask for proof/details, do it casually and ask for something like {joined}.\n"
+            )
+
+    parts.append("\nreturn only the message text. no quotes, no json, no markdown.")
     return "".join(parts)
 
 
@@ -405,6 +504,23 @@ def _fallback_reply(session: Dict[str, Any]) -> str:
     ]
     return options[n % len(options)]
 
+def _question_from_hint(hint: str) -> str:
+    h = (hint or "").strip().rstrip("?").strip()
+    if not h:
+        return "what's your employee id?"
+    low = h.lower()
+    if low.startswith(("which", "what", "whats", "who", "where")):
+        return f"{h}?"
+    return f"can you share {h}?"
+
+
+def _keep_convo_open_reply(session: Dict[str, Any]) -> str:
+    key = str(session.get("last_ask_key") or "")
+    hint = TARGET_HINTS.get(key, "") or TARGET_HINTS.get("bank_org", "")
+    q = _question_from_hint(hint)
+    return f"wait sorry... {q}".strip()
+
+
 def _safety_fallback(session: Dict[str, Any]) -> str:
     """
     Used when the model tries to request/share sensitive info or gives "stop scam" advice.
@@ -412,7 +528,13 @@ def _safety_fallback(session: Dict[str, Any]) -> str:
     """
     signals = session.get("last_signals", {}) or {}
     target_key = str(session.get("last_ask_key") or "")
-    question = TARGET_EXAMPLES.get(target_key) or "ok but what's your employee id?"
+    if not target_key:
+        try:
+            target_key = choose_next_target(session, signals)
+        except Exception:
+            target_key = ""
+    hint = TARGET_HINTS.get(target_key, "") or TARGET_HINTS.get("employee_id", "your employee id")
+    question = "ok but " + _question_from_hint(hint)
 
     prefix = "hmm wait."
     if bool(signals.get("otp")):
@@ -431,13 +553,26 @@ def _looks_like_meta(text: str) -> bool:
         return True
     return bool(META_RE.search(t))
 
+def _looks_like_farewell(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    if len(t) > 80:
+        return False
+    if not FAREWELL_RE.search(t):
+        return False
+    # If it's basically just a goodbye, treat as convo-ending.
+    if re.search(r"\b(thanks|ok|okay|alright|cool)\b", t, re.I) or len(t.split()) <= 4:
+        return True
+    return False
+
 
 def _postprocess_reply(text: str, session: Dict[str, Any], *, max_lines: int, max_chars: int) -> str:
     out = (text or "").strip()
     if not out:
         return _fallback_reply(session)
 
-    # Normalize whitespace; keep at most 2 short lines.
+    # Normalize whitespace; keep at most max_lines lines.
     out = re.sub(r"[ \t]+", " ", out)
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     out = "\n".join(lines[: max(1, int(max_lines))]).strip()
@@ -458,6 +593,12 @@ def _postprocess_reply(text: str, session: Dict[str, Any], *, max_lines: int, ma
         safe = _safety_fallback(session)
         safe = redact_sensitive(safe).strip()
         return safe or _fallback_reply(session)
+
+    # Never "end" the convo; if the model slips into goodbye mode, keep it open.
+    if _looks_like_farewell(out):
+        keep = _keep_convo_open_reply(session)
+        keep = redact_sensitive(keep).strip()
+        return keep or _fallback_reply(session)
 
     out = redact_sensitive(out)
     out = out.strip()
@@ -523,18 +664,6 @@ async def honeypot(request: Request):
         session = get_session(session_id)
         session["last_seen"] = time.time()
 
-        # Turn limit (demo safety)
-        if int(session.get("turn_count", 0) or 0) >= MAX_TURNS:
-            cleanup_session(session_id)
-            return JSONResponse(
-                {"reply": "ok i'll check this properly and get back later", "session_id": session_id, "ended": True}
-            )
-
-        if EXIT_RE.search(incoming):
-            farewell = random.choice(["ok bye", "alright bye", "ok, later", "cool, bye"])
-            cleanup_session(session_id)
-            return JSONResponse({"reply": farewell, "session_id": session_id, "ended": True})
-
         # Always record the incoming message in history.
         _append_history(session, "user", incoming)
 
@@ -557,9 +686,7 @@ async def honeypot(request: Request):
             return JSONResponse({"reply": reply, "session_id": session_id})
 
         verbosity = choose_verbosity(session, signals)
-        target_key = choose_next_target(session, signals)
-        target_hint = TARGET_HINTS.get(target_key, "")
-        target_example = TARGET_EXAMPLES.get(target_key, "")
+        turn_n = int(session.get("turn_count", 0) or 0)
         pressure = any(
             [
                 bool(signals.get("otp")),
@@ -569,19 +696,20 @@ async def honeypot(request: Request):
                 bool(signals.get("authority")),
             ]
         )
+        intel_suggestions: List[str] = []
+        if should_offer_intel_suggestions(turn_n, signals):
+            intel_suggestions = choose_intel_suggestions(session, signals)
 
         # Reserve the slot before any await to prevent parallel Groq calls.
         session["in_flight"] = True
         session["last_llm_ts"] = now
 
         try:
-            persona_state = str(session.get("persona_state") or "at_home")
             prompt = _system_prompt(
-                persona_state,
+                session,
                 length_hint=str(verbosity.get("length_hint") or ""),
-                target_hint=target_hint,
-                target_example=target_example,
                 pressure=pressure,
+                intel_suggestions=intel_suggestions,
             )
             history = session.get("history", []) or []
 
