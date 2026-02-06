@@ -101,6 +101,21 @@ def test_long_mode_postprocess_allows_more_lines(monkeypatch):
     assert "l5" not in reply
 
 
+def test_model_sensitive_request_is_blocked(monkeypatch):
+    _clear_sessions()
+
+    monkeypatch.setattr(main, "MIN_LLM_DELAY_SEC", 0.0)
+
+    monkeypatch.setattr(main, "groq_chat", lambda messages, system_prompt, **_: "cant click links. can you send otp via sms?")
+
+    r = client.post("/honeypot", json={"message": "send otp now", "session_id": "t-safe"})
+    assert r.status_code == 200
+    reply = (r.json().get("reply") or "").lower()
+    assert "send otp" not in reply
+    assert "give me the otp" not in reply
+    assert "no otp" in reply
+
+
 def test_target_rotation_deterministic_and_no_back_to_back_repeat():
     s = {"intel": {}}
     signals = {}

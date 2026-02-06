@@ -91,6 +91,15 @@ META_RE = re.compile(
     r")"
 )
 
+FORBIDDEN_SENSITIVE_REQUEST_RE = re.compile(
+    r"(?i)\b(send|share|give|tell|text|message)\b.{0,32}\b("
+    r"otp|one[-\s]?time\s?password|verification\s?code|pin|password|upi|account\s*(?:number|no)|cvv"
+    r")\b"
+)
+FORBIDDEN_CALL_REPORT_RE = re.compile(
+    r"(?i)\b(call|contact|reach|report)\b.{0,24}\b(bank|police|cyber|support|customer\s*care)\b"
+)
+
 TARGET_ORDER = [
     "bank_org",
     "name_role",
@@ -394,6 +403,25 @@ def _fallback_reply(session: Dict[str, Any]) -> str:
     ]
     return options[n % len(options)]
 
+def _safety_fallback(session: Dict[str, Any]) -> str:
+    """
+    Used when the model tries to request/share sensitive info or gives "stop scam" advice.
+    Keep it human and in-character.
+    """
+    signals = session.get("last_signals", {}) or {}
+    target_key = str(session.get("last_ask_key") or "")
+    question = TARGET_EXAMPLES.get(target_key) or "ok but what's your employee id?"
+
+    prefix = "hmm wait."
+    if bool(signals.get("otp")):
+        prefix = "no otp."
+    elif bool(signals.get("payment")) or bool(signals.get("account_request")):
+        prefix = "no, i'm not sending bank details."
+    elif bool(signals.get("link")):
+        prefix = "im not clicking links."
+
+    return f"{prefix} {question}".strip()
+
 
 def _looks_like_meta(text: str) -> bool:
     t = (text or "")
@@ -422,6 +450,12 @@ def _postprocess_reply(text: str, session: Dict[str, Any], *, max_lines: int, ma
     # Avoid list-y formatting if the model ignores instructions.
     if re.search(r"(^|\n)\s*([-*]|\d+\.)\s+", out):
         return _fallback_reply(session)
+
+    # Safety: never ask for or share sensitive info; never recommend reporting/calling bank/police.
+    if FORBIDDEN_SENSITIVE_REQUEST_RE.search(out) or FORBIDDEN_CALL_REPORT_RE.search(out):
+        safe = _safety_fallback(session)
+        safe = redact_sensitive(safe).strip()
+        return safe or _fallback_reply(session)
 
     out = redact_sensitive(out)
     out = out.strip()
