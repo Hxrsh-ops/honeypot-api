@@ -1,47 +1,98 @@
-import os
 import time
-import pytest
+
 from fastapi.testclient import TestClient
 
-# ensure tests run against the app import
-from main import app, sessions
+import main
 
-client = TestClient(app)
+
+client = TestClient(main.app)
+
+
+def _clear_sessions():
+    main.SESSIONS.clear()
+
 
 def test_root_alive():
     r = client.get("/")
     assert r.status_code == 200
     assert r.json().get("status") == "alive"
 
-def test_honeypot_legitimate_message():
-    payload = {"message": "Dear customer, a transaction of ₹500 was debited. If not initiated by you, call us.", "session_id": "test-legit"}
-    r = client.post("/honeypot", json=payload)
-    assert r.status_code == 200
-    data = r.json()
-    assert "reply" in data
-    assert data.get("is_scam") is False or data.get("legit_score") >= 0  # ensure heuristic ran
 
-def test_honeypot_scam_message_and_session_summary():
-    session_id = f"test-scam-{int(time.time()*1000)}"
-    payload = {"message": "Send me your UPI id and transfer now", "session_id": session_id}
-    r = client.post("/honeypot", json=payload)
+def test_honeypot_minimal_response_shape(monkeypatch):
+    _clear_sessions()
+
+    monkeypatch.setattr(main, "MIN_LLM_DELAY_SEC", 0.0)
+    monkeypatch.setattr(main, "groq_chat", lambda messages, system_prompt, **_: "who's this?")
+
+    r = client.post("/honeypot", json={"message": "hi", "session_id": "t-min"})
     assert r.status_code == 200
     data = r.json()
-    assert "reply" in data
-    assert data.get("is_scam") is True or data.get("legit_score") < 1.0
-    # summary endpoint
-    r2 = client.get(f"/sessions/{session_id}/summary")
+    assert set(data.keys()) == {"reply", "session_id"}
+    assert data["session_id"] == "t-min"
+    assert isinstance(data["reply"], str) and data["reply"].strip()
+
+
+def test_throttle_returns_delay_without_llm_call(monkeypatch):
+    _clear_sessions()
+
+    calls = {"n": 0}
+
+    def _fake_groq(messages, system_prompt, **_):
+        calls["n"] += 1
+        return "ok"
+
+    class _Clock:
+        def __init__(self, t: float):
+            self.t = t
+
+        def time(self) -> float:
+            return self.t
+
+    clock = _Clock(1000.0)
+    monkeypatch.setattr(main.time, "time", clock.time)
+    monkeypatch.setattr(main, "MIN_LLM_DELAY_SEC", 2.0)
+    monkeypatch.setattr(main, "groq_chat", _fake_groq)
+
+    sid = f"t-throttle-{int(time.time() * 1000)}"
+
+    r1 = client.post("/honeypot", json={"message": "hi", "session_id": sid})
+    assert r1.status_code == 200
+    assert calls["n"] == 1
+
+    clock.t = 1000.5  # < 2s later
+    r2 = client.post("/honeypot", json={"message": "hello?", "session_id": sid})
     assert r2.status_code == 200
-    s = r2.json().get("summary", {})
-    assert s.get("extract") is not None
-    # summary should contain at least the profile keys
-    assert "name" in s["extract"] and "bank" in s["extract"]
+    assert calls["n"] == 1, "Second request should be throttled (no Groq call)"
 
-def test_sessions_inspect_sanitization():
-    sid = "test-inspect"
-    client.post("/honeypot", json={"message": "Hello, who is this?", "session_id": sid})
-    r = client.get(f"/sessions/{sid}")
+    reply2 = (r2.json().get("reply") or "").lower()
+    assert any(k in reply2 for k in ["give me a moment", "one sec", "hold on", "im checking", "im looking"])
+
+
+def test_llm_failure_returns_human_fallback(monkeypatch):
+    _clear_sessions()
+
+    monkeypatch.setattr(main, "MIN_LLM_DELAY_SEC", 0.0)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(main, "groq_chat", _boom)
+
+    r = client.post("/honeypot", json={"message": "hi", "session_id": "t-fail"})
     assert r.status_code == 200
-    sess = r.json().get("session")
-    # recent_responses should be serializable (not a set)
-    assert isinstance(sess.get("recent_responses", []), list) or isinstance(sess.get("recent_responses", []), (list, tuple))
+    data = r.json()
+    assert set(data.keys()) == {"reply", "session_id"}
+    assert data["reply"]
+    assert "groq" not in data["reply"].lower()
+    assert "api" not in data["reply"].lower()
+
+
+def test_debug_endpoints_disabled_by_default(monkeypatch):
+    _clear_sessions()
+
+    monkeypatch.setattr(main, "DEBUG_ENDPOINTS", False)
+    r1 = client.get("/sessions/whatever")
+    assert r1.status_code == 404
+    r2 = client.get("/sessions/whatever/summary")
+    assert r2.status_code == 404
+

@@ -26,7 +26,6 @@ typing_extensions==4.11.0
 # LLM (stable + safe)
 # ===============================
 openai==1.14.3
-anthropic==0.25.9
 
 # ===============================
 # Utilities

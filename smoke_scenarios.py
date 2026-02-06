@@ -12,6 +12,7 @@ import requests
 
 
 IDENTITY_LOOP_RE = re.compile(r"\b(who(?:'s|s| is)\s+this|who\s+are\s+u|who\s+r\s+u|who\?)\b", re.I)
+META_RE = re.compile(r"\b(as an ai|language model|system prompt|openai|groq|api|model|tokens?)\b", re.I)
 
 
 @dataclass
@@ -43,12 +44,9 @@ def run_scenario(
     session_id = str(uuid.uuid4())
     turns: List[Turn] = []
 
-    llm_true = 0
-    llm_total = 0
-    providers: Dict[str, int] = {}
-    last_profile: Dict[str, Any] = {}
-
     identity_given = False
+    extra_keys = 0
+    meta_hits = 0
 
     for msg in messages:
         payload = {"message": msg, "session_id": session_id}
@@ -58,22 +56,19 @@ def run_scenario(
             reply = f"[no reply] {data}"
         reply_s = str(reply)
 
-        prov = str(data.get("llm_provider") or "none")
-        providers[prov] = providers.get(prov, 0) + 1
-
-        if msg.strip().lower() != "exit":
-            llm_total += 1
-            if bool(data.get("llm_used")):
-                llm_true += 1
-
-        prof = data.get("extracted_profile") or {}
-        if isinstance(prof, dict):
-            last_profile = prof
+        # Minimal response contract: only reply + session_id (+ ended optional).
+        allowed = {"reply", "session_id", "ended"}
+        if isinstance(data, dict):
+            if any(k not in allowed for k in data.keys()):
+                extra_keys += 1
 
         # crude "identity provided" tracking
         low = msg.lower()
         if ("i am " in low or "this is " in low) and ("bank" in low or "from" in low):
             identity_given = True
+
+        if META_RE.search(reply_s):
+            meta_hits += 1
 
         turns.append(Turn(you=msg, bot=reply_s, meta=data))
 
@@ -81,8 +76,7 @@ def run_scenario(
             break
         time.sleep(delay)
 
-    # checks/metrics
-    llm_rate = (llm_true / llm_total) if llm_total else 0.0
+    # checks/metrics (lightweight)
     identity_loop_after_identity = False
     if identity_given:
         for t in turns:
@@ -95,10 +89,9 @@ def run_scenario(
     report = {
         "scenario": name,
         "session_id": session_id,
-        "llm_used_rate": round(llm_rate, 3),
-        "providers": providers,
         "identity_loop_after_identity": identity_loop_after_identity,
-        "last_extracted_profile": last_profile,
+        "responses_with_extra_keys": extra_keys,
+        "meta_leak_hits": meta_hits,
     }
     return name, turns, report
 
@@ -107,7 +100,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke scenarios against a running honeypot API")
     parser.add_argument("--base", default=os.getenv("HONEYPOT_URL", "").strip() or "https://spotless-maggi-hxrsh-ops-36f954ea.koyeb.app/honeypot")
     parser.add_argument("--key", default=os.getenv("HONEYPOT_API_KEY", "").strip() or "test-key")
-    parser.add_argument("--delay", type=float, default=float(os.getenv("SMOKE_DELAY", "0.8")))
+    parser.add_argument("--delay", type=float, default=float(os.getenv("SMOKE_DELAY", "2.2")))
     parser.add_argument("--timeout", type=float, default=float(os.getenv("SMOKE_TIMEOUT", "40")))
     parser.add_argument("--out", default="", help="Optional output log path (defaults to learning_data/)")
     args = parser.parse_args()
@@ -199,4 +192,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

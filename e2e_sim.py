@@ -61,13 +61,4 @@ for i, m in enumerate(messages, 1):
     print(f'--- Turn {i} ---')
     print('Scammer:', m)
     print('Bot:', reply)
-    print('Summary Extract:', data.get('extracted_profile'))
-    print('Memory:', data.get('memory'))
-    print('Claims:', data.get('claims'))
     time.sleep(0.7)
-
-# final session summary call
-s = requests.get(f'http://127.0.0.1:8000/sessions/{session_id}', timeout=4)
-print('\nSession inspection:\n', s.json())
-final = requests.get(f'http://127.0.0.1:8000/sessions/{session_id}/summary', timeout=4)
-print('\nSession summary:\n', final.json())

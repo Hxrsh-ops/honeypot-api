@@ -333,6 +333,7 @@ def redact_sensitive(text: str) -> str:
     if not text:
         return text
     # Keep masking human-ish; avoid botty "[redacted]" tokens in replies.
+    text = URL_RE.sub("that link", text)
     text = PHONE_RE.sub("xxxx", text)
     text = UPI_RE.sub("(upi)", text)
     text = re.sub(r"\b\d{4,}\b", "xxxx", text)
