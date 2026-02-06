@@ -296,6 +296,7 @@ def choose_verbosity(session: Dict[str, Any], signals: Dict[str, bool]) -> Dict[
             "max_lines": 4,
             "max_chars": 520,
             "max_tokens": 260,
+            "temperature": 0.6,
             "length_hint": "write 3-6 short sentences, a bit rambly, 2-4 lines max. dont reply in just one short sentence",
         }
     return {
@@ -303,6 +304,7 @@ def choose_verbosity(session: Dict[str, Any], signals: Dict[str, bool]) -> Dict[
         "max_lines": 2,
         "max_chars": 260,
         "max_tokens": 120,
+        "temperature": 0.5,
         "length_hint": "keep it short (1-2 short sentences, max 2 short lines)",
     }
 
@@ -587,7 +589,7 @@ async def honeypot(request: Request):
                 groq_chat,
                 history,
                 prompt,
-                temperature=0.7,
+                temperature=float(verbosity.get("temperature") or 0.55),
                 max_tokens=int(verbosity.get("max_tokens") or 120),
             )
         except Exception:
