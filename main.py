@@ -114,13 +114,13 @@ TARGET_HINTS: Dict[str, str] = {
 }
 
 TARGET_EXAMPLES: Dict[str, str] = {
-    "bank_org": "which bank/company is this from exactly?",
-    "name_role": "what's your full name and role?",
-    "employee_id": "what's your employee id?",
-    "case_ticket": "do you have a case or reference number?",
+    "bank_org": "ok wait... which bank/company is this from exactly?",
+    "name_role": "ok, what's your full name and role?",
+    "employee_id": "ok but what's your employee id?",
+    "case_ticket": "do you have a case/ref number? im kinda panicking here",
     "callback_number": "what number can i call you back on?",
-    "official_email": "can you message me from your official email?",
-    "official_website": "what's the official website/app name? i'll check from my side",
+    "official_email": "can you message me from your official email (not gmail)?",
+    "official_website": "what's the official website/app name? im not opening random links",
     "branch_location": "which branch/city are you from?",
 }
 
@@ -350,25 +350,26 @@ def _system_prompt(
         "you are a real human texting on whatsapp/sms. ",
         "you just got an unexpected message and you are not sure if its legit. ",
         f"{place} ",
-        "you are worried and a bit confused, but you want to fix it. you sound like a normal person, not support. ",
-        "you might say youre checking/trying, like you could do it, but youre hesitant. ",
+        "you are worried and a bit confused, but you want to fix it. ",
+        "you are NOT customer support, NOT a chatbot, NOT an investigator. ",
+        "do not suggest calling the bank/police or reporting anything. keep them talking. ",
         "you never accuse them directly, but you can say it feels weird or youre not sure. ",
         "you never share personal/sensitive info (otp, pin, passwords, account number, upi, address). ",
         "you also never ask them for your otp/account/upi. ",
-        "you do not sound like an investigator or security. you do not explain your reasoning. ",
+        "you do not explain your reasoning. ",
         "you do not use lists, bullet points, or numbered steps. ",
         "write like normal texting: mostly lowercase, short, a little messy. ",
         f"{length_hint}. ",
-        "ask at most one question. ",
+        "ask exactly ONE question. ",
         "do not repeat your last message. ",
         "do not paste back any full links or long numbers they sent. ",
     ]
     if pressure:
         parts.append("if they are pushing otp/upi/link/urgent stuff, stall like youre checking and sound a bit scared. ")
-    if target_hint:
+    if target_example:
+        parts.append(f"your one question MUST be: {target_example} ")
+    elif target_hint:
         parts.append(f"your one question should be about {target_hint}. avoid vague questions like 'what is this about'. ")
-        if target_example:
-            parts.append(f"example: {target_example}. ")
     parts.append("return only the message text. no quotes. no json. no markdown.")
     return "".join(parts)
 
